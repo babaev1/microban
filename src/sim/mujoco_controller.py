@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 Marc Duclusaud
 
+import math
 import time
 from collections import deque
 from collections.abc import Callable
@@ -17,6 +18,23 @@ from bam.model import load_model as bam_load_model
 from bam.mujoco import MujocoController as BamController
 
 from constants import MOTOR_TO_ID, ID_TO_MOTOR, NEUTRAL_POSE, KP_DEFAULT, BAM_VIN, BAM_VOLTAGE_DROP_GAIN, BAM_VIN_MIN, BAM_MAX_CURRENT
+
+# Spawn pose of the trunk free joint.
+#
+# NEUTRAL_POSE pitches the hips by -10 deg with the knees and ankles at zero, so
+# the legs — and with them the foot soles — are rotated 10 deg relative to the
+# trunk. Spawning with the trunk upright therefore leaves the robot toe-up,
+# balanced on its heels, and it tips forward before the walk policy can engage.
+# Pitching the trunk back by the same angle puts the soles flat on the floor
+# (measured flatness: 0.1 mm across all 12 foot collision geoms).
+SPAWN_TRUNK_PITCH: float = -NEUTRAL_POSE["left_hip_pitch"]
+SPAWN_TRUNK_QUAT: tuple[float, float, float, float] = (
+    math.cos(SPAWN_TRUNK_PITCH / 2), 0.0, math.sin(SPAWN_TRUNK_PITCH / 2), 0.0
+)
+# Trunk height [m] at which the flat soles just touch the floor (0.1701), plus
+# 2 mm clearance. Too low and MuJoCo resolves the penetration by ejecting the
+# robot on the first step. It settles to ~0.165 under its own weight.
+SPAWN_TRUNK_Z: float = 0.1721
 
 
 class _DelayBuffer:
@@ -83,12 +101,27 @@ class MuJoCoController:
             self._model.body_ipos[trunk_id, 1] += trunk_com_offset[1]
             self._model.body_ipos[trunk_id, 2] += trunk_com_offset[2]
 
+        # BAM motor model — XL330 m6 (DC motor + Stribeck + load-dependent friction)
+        # Built before the initial pose is applied: the BamController constructor
+        # calls mj_setConst, which resets mjData back to qpos0. Setting the pose
+        # first would leave the robot at the origin, half-buried in the floor.
+        bam_model = bam_load_model(motor_name="xl330", model="m6")
+        bam_model.actuator.kp = KP_DEFAULT
+        bam_model.actuator.vin = BAM_VIN
+        # The firmware current limit lives on the actuator, applied by BAM as a
+        # duty-cycle constraint inside compute_control.
+        bam_model.actuator.max_current = BAM_MAX_CURRENT
+        self._bam = BamController(
+            bam_model,
+            list(MOTOR_TO_ID.keys()),
+            self._model,
+            self._data,
+            vin_drop_resistance=BAM_VOLTAGE_DROP_GAIN,
+            vin_min=BAM_VIN_MIN,
+        )
+
         # Set initial pose to neutral so the robot starts upright
-        self._data.qpos[2] = 0.165
-        for name, angle in NEUTRAL_POSE.items():
-            if name in self._name_to_qpos_idx:
-                self._data.qpos[self._name_to_qpos_idx[name]] = angle
-        mujoco.mj_forward(self._model, self._data)
+        self._apply_neutral_pose()
 
         # Delay buffers — simulate sensor/communication latency
         self._delay_pos = {
@@ -112,20 +145,7 @@ class MuJoCoController:
             for mid in MOTOR_TO_ID.values()
         }
 
-        # BAM motor model — XL330 m6 (DC motor + Stribeck + load-dependent friction)
-        bam_model = bam_load_model(motor_name="xl330", model="m6")
-        bam_model.actuator.kp = KP_DEFAULT
-        bam_model.actuator.vin = BAM_VIN
-        self._bam = BamController(
-            bam_model,
-            list(MOTOR_TO_ID.keys()),
-            self._model,
-            self._data,
-            vin_drop_gain=BAM_VOLTAGE_DROP_GAIN,
-            vin_min=BAM_VIN_MIN,
-            max_current=BAM_MAX_CURRENT,
-        )
-        self._bam.reset(self._data.qpos)
+        self._bam_reset_targets()
 
         self._viewer = mujoco.viewer.launch_passive(
             self._model, self._data, key_callback=key_callback
@@ -255,17 +275,32 @@ class MuJoCoController:
             current = (float(w), float(x), float(y), float(z))
         return self._delay_quat.push_and_read(current)
 
+    def _apply_neutral_pose(self) -> None:
+        """Place the robot in the neutral pose, soles flat just above the floor."""
+        self._data.qpos[2] = SPAWN_TRUNK_Z
+        self._data.qpos[3:7] = SPAWN_TRUNK_QUAT
+        for name, angle in NEUTRAL_POSE.items():
+            if name in self._name_to_qpos_idx:
+                self._data.qpos[self._name_to_qpos_idx[name]] = angle
+        mujoco.mj_forward(self._model, self._data)
+
+    def _bam_reset_targets(self) -> None:
+        """Seed the BAM targets from the current joint positions.
+
+        BAM initialises its targets to zero, so without this the first update()
+        would drive every joint away from the neutral pose.
+        """
+        self._bam.model.actuator.reset()
+        for name, qpos_idx in self._name_to_qpos_idx.items():
+            self._bam.set_q_target(name, self._data.qpos[qpos_idx])
+
     def reset(self) -> None:
         """Reset the simulation to the initial neutral standing pose."""
         self._data.qpos[:] = 0.0
         self._data.qvel[:] = 0.0
         self._data.ctrl[:] = 0.0
-        self._data.qpos[2] = 0.165
-        for name, angle in NEUTRAL_POSE.items():
-            if name in self._name_to_qpos_idx:
-                self._data.qpos[self._name_to_qpos_idx[name]] = angle
-        mujoco.mj_forward(self._model, self._data)
-        self._bam.reset(self._data.qpos)
+        self._apply_neutral_pose()
+        self._bam_reset_targets()
         for mid in MOTOR_TO_ID.values():
             neutral = self._data.qpos[self._name_to_qpos_idx[ID_TO_MOTOR[mid]]]
             self._delay_act[mid].fill(neutral)
