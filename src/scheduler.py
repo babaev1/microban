@@ -166,9 +166,6 @@ class Scheduler:
 
                 if sleep_time > 0:
                     time.sleep(sleep_time)
-                else:
-                    ms_late = -sleep_time * 1000
-                    print(f"Warning: control loop overrun by {ms_late:.2f} ms", end="\r\n", flush=True)
 
         except KeyboardInterrupt:
             print("Control loop interrupted by user", end="\r\n", flush=True)

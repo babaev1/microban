@@ -41,6 +41,8 @@ class KeyboardInputSource(InputSource):
         self._thread: threading.Thread | None = None
         self._running = False
         self._old_settings: list | None = None
+        self._reset_requested = threading.Event()
+        self._show_torque = False
 
     def start(self) -> None:
         self._running = True
@@ -59,6 +61,18 @@ class KeyboardInputSource(InputSource):
                 velocity=dict(self._state.velocity),
                 show_imu=self._state.show_imu,
             )
+
+    @property
+    def show_torque(self) -> bool:
+        with self._lock:
+            return self._show_torque
+
+    def consume_reset(self) -> bool:
+        """Return True (and clear the flag) if a reset was requested since last call."""
+        if self._reset_requested.is_set():
+            self._reset_requested.clear()
+            return True
+        return False
 
     # ------------------------------------------------------------------
     # Internal
@@ -109,6 +123,17 @@ class KeyboardInputSource(InputSource):
                 self._state.show_imu = not self._state.show_imu
             status = "enabled" if self._state.show_imu else "disabled"
             print(f"IMU display {status}", end="\r\n", flush=True)
+        elif key == "r":
+            # Only acted on by controllers that read reset_source (e.g. MuJoCoController
+            # in sim); harmless elsewhere — the real robot controller never consumes it.
+            self._reset_requested.set()
+            print("Reset requested", end="\r\n", flush=True)
+        elif key == "t":
+            with self._lock:
+                self._show_torque = not self._show_torque
+                show = self._show_torque
+            status = "enabled" if show else "disabled"
+            print(f"Torque sum display {status}", end="\r\n", flush=True)
         elif key == _ARROW_UP:
             self._adjust_velocity("vx", +VELOCITY_STEP)
         elif key == _ARROW_DOWN:
@@ -137,8 +162,10 @@ class KeyboardInputSource(InputSource):
             "Keyboard controls:",
             *(f"  [{key}]      toggle move '{name}'" for key, name in self._move_keys.items()),
             "  [i]      toggle IMU/gyro display",
+            "  [t]      toggle torque sum display",
             "  [arrows] vx (up/down), vtheta (left/right)",
             "  [x]      reset velocity to zero",
+            "  [r]      reset robot to initial pose",
             "  [q]      stop scheduler",
         ]
         for line in lines:
