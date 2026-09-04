@@ -73,7 +73,7 @@ MOTOR_SIGN = {
 
 # Position P Gain (Dynamixel register value)
 KP_DEFAULT: int = 7334       #400        # ~0.886 Nm/rad in MuJoCo
-KP_RL: int = 125             # ~0.277 Nm/rad in MuJoCo
+KP_RL: int = 7334            #125             # ~0.277 Nm/rad in MuJoCo
 KP_GAIN_PRM: float = 0.0022  # Nm/rad per register unit (for Xl330)
 
 # BAM motor model (bam package, XL330 m6)
