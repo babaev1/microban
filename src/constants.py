@@ -18,35 +18,35 @@ MOTOR_TO_ID = {
     "right_ankle_roll": 26,
     "left_shoulder_pitch": 31,
     "left_shoulder_roll": 32,
-    "left_elbow": 33,
+    #"left_elbow": 33,
     "right_shoulder_pitch": 41,
     "right_shoulder_roll": 42,
-    "right_elbow": 43,
-    "head": 51,
+    #"right_elbow": 43,
+    #"head": 51,
 }
 
 ID_TO_MOTOR = {v: k for k, v in MOTOR_TO_ID.items()}
 
 NEUTRAL_POSE = {
     "left_hip_yaw": float(np.deg2rad(0.0)),
-    "left_hip_roll": float(np.deg2rad(5.0)),
-    "left_hip_pitch": float(np.deg2rad(-10.0)),
+    "left_hip_roll": float(np.deg2rad(0.0)),
+    "left_hip_pitch": float(np.deg2rad(0.0)),
     "left_knee": float(np.deg2rad(0.0)),
     "left_ankle_pitch": float(np.deg2rad(0.0)),
-    "left_ankle_roll": float(np.deg2rad(-5.0)),
+    "left_ankle_roll": float(np.deg2rad(0.0)),
     "right_hip_yaw": float(np.deg2rad(0.0)),
-    "right_hip_roll": float(np.deg2rad(-5.0)),
-    "right_hip_pitch": float(np.deg2rad(-10.0)),
+    "right_hip_roll": float(np.deg2rad(0.0)),
+    "right_hip_pitch": float(np.deg2rad(0.0)),
     "right_knee": float(np.deg2rad(0.0)),
     "right_ankle_pitch": float(np.deg2rad(0.0)),
-    "right_ankle_roll": float(np.deg2rad(5.0)),
-    "left_shoulder_pitch": float(np.deg2rad(10.0)),
-    "left_shoulder_roll": float(np.deg2rad(10.0)),
-    "left_elbow": float(np.deg2rad(-20.0)),
-    "right_shoulder_pitch": float(np.deg2rad(10.0)),
-    "right_shoulder_roll": float(np.deg2rad(-10.0)),
-    "right_elbow": float(np.deg2rad(-20.0)),
-    "head": float(np.deg2rad(0.0)),
+    "right_ankle_roll": float(np.deg2rad(0.0)),
+    "left_shoulder_pitch": float(np.deg2rad(0.0)),
+    "left_shoulder_roll": float(np.deg2rad(0.0)),
+    #"left_elbow": float(np.deg2rad(0.0)),
+    "right_shoulder_pitch": float(np.deg2rad(0.0)),
+    "right_shoulder_roll": float(np.deg2rad(0.0)),
+    #"right_elbow": float(np.deg2rad(0.0)),
+    #"head": float(np.deg2rad(0.0)),
 }
 
 MOTOR_SIGN = {
@@ -72,15 +72,15 @@ MOTOR_SIGN = {
 }
 
 # Position P Gain (Dynamixel register value)
-KP_DEFAULT: int = 400        # ~0.886 Nm/rad in MuJoCo
+KP_DEFAULT: int = 7334       #400        # ~0.886 Nm/rad in MuJoCo
 KP_RL: int = 125             # ~0.277 Nm/rad in MuJoCo
 KP_GAIN_PRM: float = 0.0022  # Nm/rad per register unit (for Xl330)
 
 # BAM motor model (bam package, XL330 m6)
-BAM_VIN: float = 7.5
-BAM_VIN_MIN: float = 6.0
+BAM_VIN: float = 11.0       #7.5
+BAM_VIN_MIN: float = 9.0    #6.0
 BAM_VOLTAGE_DROP_GAIN: float = 0.2
-BAM_MAX_CURRENT: float = 1.75 # XL330 firmware current limit [A]: clips motor torque to ±BAM_MAX_CURRENT * kt
+BAM_MAX_CURRENT: float = 6.8   #1.75 # XL330 firmware current limit [A]: clips motor torque to ±BAM_MAX_CURRENT * kt
 
 # Overcurrent safety: emergency torque-off when the summed |present_current| of all
 # motors stays above OVERCURRENT_CUTOFF_A for OVERCURRENT_DEBOUNCE_TICKS consecutive ticks.
@@ -121,7 +121,7 @@ IMU_MOUNT_QUAT: tuple[float, float, float, float] = (0.5, -0.5, -0.5, 0.5)
 OBSERVATION_DOF_ORDER = [
     "right_shoulder_pitch",
     "right_shoulder_roll",
-    "right_elbow",
+    #"right_elbow",
     "right_hip_yaw",
     "right_hip_roll",
     "right_hip_pitch",
@@ -130,7 +130,7 @@ OBSERVATION_DOF_ORDER = [
     "right_ankle_roll",
     "left_shoulder_pitch",
     "left_shoulder_roll",
-    "left_elbow",
+    #"left_elbow",
     "left_hip_yaw",
     "left_hip_roll",
     "left_hip_pitch",
