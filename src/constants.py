@@ -73,7 +73,13 @@ MOTOR_SIGN = {
 
 # Position P Gain (Dynamixel register value)
 KP_DEFAULT: int = 7334       #400        # ~0.886 Nm/rad in MuJoCo
-KP_RL: int = 7334             # ~0.277 Nm/rad in MuJoCo
+# Reverted back to 125: it was raised to 1000 (and OVERCURRENT_CUTOFF_A to 60A alongside
+# it) while chasing what looked like the robot being too soft to hold the walk policy's
+# crouch — but that whole symptom was very likely a side effect of the IMU_MOUNT_QUAT
+# regression documented further down this file (now reverted), feeding the policy a badly
+# wrong orientation, not an actual torque shortfall. Re-test with the IMU fix reverted
+# before touching this again.
+KP_RL: int = 125             # ~0.277 Nm/rad in MuJoCo
 KP_GAIN_PRM: float = 0.0022  # Nm/rad per register unit (for Xl330)
 
 # BAM motor model (bam package, XL330 m6)
@@ -86,6 +92,9 @@ BAM_MAX_CURRENT: float = 6.8   #1.75 # XL330 firmware current limit [A]: clips m
 # motors stays above OVERCURRENT_CUTOFF_A for OVERCURRENT_DEBOUNCE_TICKS consecutive ticks.
 # Goal: cut the robot before a current spike (e.g. all motors snapping during a fall) trips the BMS.
 PRESENT_CURRENT_UNIT_A: float = 0.001   # XL330 present_current register unit (1.0 mA/LSB)
+# Reverted back to 15.0 alongside KP_RL — was raised to 60A to cover a "sustained high
+# current" reading that was itself measured under the (now-reverted) bad IMU_MOUNT_QUAT,
+# so that data point is no longer trustworthy. Re-test with the IMU fix reverted first.
 OVERCURRENT_CUTOFF_A: float = 15.0      # total pack current threshold (CALIBRATE: below BMS trip, above normal walk peak)
 OVERCURRENT_DEBOUNCE_TICKS: int = 2     # consecutive over-threshold ticks before cutting
 
@@ -114,15 +123,17 @@ VTHETA_MAX_MOVING: float = 1.5
 # IMU (BMI088) I2C bus number on the Raspberry Pi
 IMU_I2C_BUS: int = 1
 
-# Rotation from trunk frame (body) to IMU sensor frame. Derived from the sim's own
-# "orientation" sensor reading while standing upright at NEUTRAL_POSE — with the old
-# value (calibrated before the roki model swap), projected_gravity came out pointing
-# along the trunk's X axis instead of Z even when standing perfectly upright, which
-# the walk RL policy read as "robot tipped on its side" and reacted to violently
-# (see Scheduler._check_overcurrent trips right after enabling walk). Re-verify
-# against the real BMI088 mounting on the physical robot if that hasn't been done
-# since the roki swap — this constant is shared by sim and real hardware.
-IMU_MOUNT_QUAT: tuple[float, float, float, float] = (0.7071067811865476, 0.0, 0.0, 0.7071067811865476)
+# Rotation from trunk frame (body) to IMU sensor frame — the mjcf "imu" site's own local
+# quat (robot.xml). This was briefly (and wrongly) changed to (0.70710678, 0, 0, 0.70710678)
+# while debugging an apparent gravity-axis mismatch; that diagnosis was itself based on a
+# test harness that hardcoded a stale SPAWN_TRUNK_QUAT literal instead of computing it from
+# NEUTRAL_POSE (mujoco_controller.py derives it as -NEUTRAL_POSE["left_hip_pitch"], which is
+# 0 in the current all-zero NEUTRAL_POSE, i.e. spawn orientation is identity) — recomputed
+# correctly, THIS value already gives projected_gravity=(0,0,-1) at a true upright spawn, so
+# it was correct all along. Re-verify against the real BMI088 mounting if that hasn't been
+# done — this constant is shared by sim and real hardware — but don't re-derive it from sim
+# without re-deriving SPAWN_TRUNK_QUAT the same way mujoco_controller.py does.
+IMU_MOUNT_QUAT: tuple[float, float, float, float] = (0.5, -0.5, -0.5, 0.5)
 
 # NOTE: the walk RL policy's DoF ordering used to be hardcoded here as
 # OBSERVATION_DOF_ORDER, but it didn't match the order the policy was actually

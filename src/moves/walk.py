@@ -14,6 +14,11 @@ from moves.move import MotorCommand, Move, MoveState
 # Note: requires to set observe_voltage = True in the Observer to log voltages
 LOGGING = False
 
+# Set to True to print projected_gravity/gyro/lean a few times a second while walking is
+# active — useful for diagnosing balance loss (growing lean, fall) without a full LOGGING dump.
+DEBUG_PRINT = False
+DEBUG_PRINT_INTERVAL_S = 0.3
+
 # Policy name
 AGENT_NAME = "walk.onnx"
 
@@ -62,6 +67,9 @@ class WalkMove(Move):
 
         # Safety parameters
         self._projected_gravity_z_threshold = -0.5  # Threshold for detecting a fall based on projected gravity
+
+        # Debug print throttle (see DEBUG_PRINT above)
+        self._last_debug_print_s: float = 0.0
 
         # Logging
         self.position = {
@@ -126,6 +134,15 @@ class WalkMove(Move):
         for name, target in self._default_pose.items():
             command.target_angles[name] = self._start_lerp_angles[name] * (1.0 - t) + target * t
 
+        if DEBUG_PRINT and (obs.robot_state.time_s - self._last_debug_print_s) >= DEBUG_PRINT_INTERVAL_S:
+            self._last_debug_print_s = obs.robot_state.time_s
+            pg = obs.robot_state.projected_gravity
+            lean_deg = np.degrees(np.arccos(max(-1.0, min(1.0, -pg[2])))) if pg else float("nan")
+            print(
+                f"Walk: RAMPING t={t:.2f} proj_grav={tuple(round(v, 3) for v in pg)} lean={lean_deg:.1f}deg",
+                end="\r\n", flush=True,
+            )
+
         if t >= 1.0:
             if self._controller is not None:
                 ids = list(MOTOR_TO_ID.values())
@@ -142,10 +159,20 @@ class WalkMove(Move):
             else:
                 self._phase_step = 0
 
-        # Safety check: if the robot is fallen, stop the policy
+        # Safety check: if the robot is fallen, stop the policy. NOTE: when this fires,
+        # step() returns WITHOUT touching command.target_angles, which the scheduler
+        # freshly initializes to NEUTRAL_POSE every tick — so a "fallen" robot gets
+        # commanded straight to NEUTRAL_POSE (not held in place), which can look like
+        # abrupt/repetitive leg motion if this flips on and off near the threshold.
         if obs.robot_state.projected_gravity[2] > self._projected_gravity_z_threshold:
+            if DEBUG_PRINT:
+                print(
+                    f"Walk: FALL DETECTED, policy suspended (falling back to NEUTRAL_POSE) — "
+                    f"proj_grav={tuple(round(v, 3) for v in obs.robot_state.projected_gravity)}",
+                    end="\r\n", flush=True,
+                )
             return
-        
+
         # Run policy
         input_obs = self.build_observation(obs)
         ort_inputs = {self._ort_session.get_inputs()[0].name: [input_obs]}
@@ -156,6 +183,17 @@ class WalkMove(Move):
         # Update command
         for i, name in enumerate(self._dof_order):
             command.target_angles[name] = self._default_pose[name] + action[i] * self.action_scale
+
+        if DEBUG_PRINT and (obs.robot_state.time_s - self._last_debug_print_s) >= DEBUG_PRINT_INTERVAL_S:
+            self._last_debug_print_s = obs.robot_state.time_s
+            pg = obs.robot_state.projected_gravity
+            gyro = obs.robot_state.gyro
+            lean_deg = np.degrees(np.arccos(max(-1.0, min(1.0, -pg[2])))) if pg else float("nan")
+            print(
+                f"Walk: proj_grav={tuple(round(v, 3) for v in pg)} gyro={tuple(round(v, 3) for v in gyro)} "
+                f"lean={lean_deg:.1f}deg max|action|={float(np.max(np.abs(action))):.2f}",
+                end="\r\n", flush=True,
+            )
 
         # Log positions and voltages
         if LOGGING:
