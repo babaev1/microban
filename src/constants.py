@@ -114,8 +114,15 @@ VTHETA_MAX_MOVING: float = 1.5
 # IMU (BMI088) I2C bus number on the Raspberry Pi
 IMU_I2C_BUS: int = 1
 
-# Rotation from trunk frame (body) to IMU sensor frame
-IMU_MOUNT_QUAT: tuple[float, float, float, float] = (0.5, -0.5, -0.5, 0.5)
+# Rotation from trunk frame (body) to IMU sensor frame. Derived from the sim's own
+# "orientation" sensor reading while standing upright at NEUTRAL_POSE — with the old
+# value (calibrated before the roki model swap), projected_gravity came out pointing
+# along the trunk's X axis instead of Z even when standing perfectly upright, which
+# the walk RL policy read as "robot tipped on its side" and reacted to violently
+# (see Scheduler._check_overcurrent trips right after enabling walk). Re-verify
+# against the real BMI088 mounting on the physical robot if that hasn't been done
+# since the roki swap — this constant is shared by sim and real hardware.
+IMU_MOUNT_QUAT: tuple[float, float, float, float] = (0.7071067811865476, 0.0, 0.0, 0.7071067811865476)
 
 # NOTE: the walk RL policy's DoF ordering used to be hardcoded here as
 # OBSERVATION_DOF_ORDER, but it didn't match the order the policy was actually
