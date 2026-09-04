@@ -3,6 +3,7 @@
 
 import math
 
+from constants import MOTOR_TO_ID
 from observer import Observation
 from moves.move import MotorCommand, Move, MoveState
 
@@ -51,7 +52,8 @@ class RotateHeadMove(Move):
 
         t = (obs.robot_state.time_s - self._lerp_start_time_s) / self.lerp_duration
         t = min(t, 1.0)
-        command.target_angles["head"] = self._lerp_start_angle * (1.0 - t)
+        if "head" in MOTOR_TO_ID:
+            command.target_angles["head"] = self._lerp_start_angle * (1.0 - t)
 
         if t >= 1.0:
             self._lerp_start_time_s = None
@@ -61,7 +63,8 @@ class RotateHeadMove(Move):
     def step(self, obs: Observation, command: MotorCommand) -> None:
         t = obs.robot_state.time_s - self._active_start_time_s
         head_angle = self.amplitude_rad * math.sin(2.0 * math.pi * self.frequency * t)
-        command.target_angles["head"] = head_angle
+        if "head" in MOTOR_TO_ID:
+            command.target_angles["head"] = head_angle
 
         if LOGGING:
             self._obs_head_angle.append(obs.robot_state.motor_positions.get("head", 0.0))
@@ -86,7 +89,8 @@ class RotateHeadMove(Move):
 
         t = (obs.robot_state.time_s - self._lerp_start_time_s) / self.lerp_duration
         t = min(t, 1.0)
-        command.target_angles["head"] = self._lerp_start_angle * (1.0 - t)
+        if "head" in MOTOR_TO_ID:
+            command.target_angles["head"] = self._lerp_start_angle * (1.0 - t)
 
         if t >= 1.0:
             self._lerp_start_time_s = None

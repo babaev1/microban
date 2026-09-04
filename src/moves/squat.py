@@ -18,8 +18,8 @@ _LOWER_JOINTS = [
 ]
 
 _UPPER_JOINTS = [
-    "left_shoulder_pitch", "left_shoulder_roll", "left_elbow",
-    "right_shoulder_pitch", "right_shoulder_roll", "right_elbow",
+    "left_shoulder_pitch", "left_shoulder_roll",
+    "right_shoulder_pitch", "right_shoulder_roll",
 ]
 
 
