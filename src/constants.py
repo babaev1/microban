@@ -73,7 +73,7 @@ MOTOR_SIGN = {
 
 # Position P Gain (Dynamixel register value)
 KP_DEFAULT: int = 7334       #400        # ~0.886 Nm/rad in MuJoCo
-KP_RL: int = 7334            #125             # ~0.277 Nm/rad in MuJoCo
+KP_RL: int = 125             # ~0.277 Nm/rad in MuJoCo
 KP_GAIN_PRM: float = 0.0022  # Nm/rad per register unit (for Xl330)
 
 # BAM motor model (bam package, XL330 m6)
@@ -86,7 +86,7 @@ BAM_MAX_CURRENT: float = 6.8   #1.75 # XL330 firmware current limit [A]: clips m
 # motors stays above OVERCURRENT_CUTOFF_A for OVERCURRENT_DEBOUNCE_TICKS consecutive ticks.
 # Goal: cut the robot before a current spike (e.g. all motors snapping during a fall) trips the BMS.
 PRESENT_CURRENT_UNIT_A: float = 0.001   # XL330 present_current register unit (1.0 mA/LSB)
-OVERCURRENT_CUTOFF_A: float = 30.0      # 15 total pack current threshold (CALIBRATE: below BMS trip, above normal walk peak)
+OVERCURRENT_CUTOFF_A: float = 15.0      # total pack current threshold (CALIBRATE: below BMS trip, above normal walk peak)
 OVERCURRENT_DEBOUNCE_TICKS: int = 2     # consecutive over-threshold ticks before cutting
 
 # Current proxy used when present_current is NOT read (Observer.observe_current = False), so the
@@ -117,24 +117,10 @@ IMU_I2C_BUS: int = 1
 # Rotation from trunk frame (body) to IMU sensor frame
 IMU_MOUNT_QUAT: tuple[float, float, float, float] = (0.5, -0.5, -0.5, 0.5)
 
-# Observation DoF ordering
-OBSERVATION_DOF_ORDER = [
-    "right_shoulder_pitch",
-    "right_shoulder_roll",
-    #"right_elbow",
-    "right_hip_yaw",
-    "right_hip_roll",
-    "right_hip_pitch",
-    "right_knee",
-    "right_ankle_pitch",
-    "right_ankle_roll",
-    "left_shoulder_pitch",
-    "left_shoulder_roll",
-    #"left_elbow",
-    "left_hip_yaw",
-    "left_hip_roll",
-    "left_hip_pitch",
-    "left_knee",
-    "left_ankle_pitch",
-    "left_ankle_roll"
-]
+# NOTE: the walk RL policy's DoF ordering used to be hardcoded here as
+# OBSERVATION_DOF_ORDER, but it didn't match the order the policy was actually
+# trained on (its ONNX metadata's joint_names) — that mismatch misapplied
+# actions to the wrong joints and was the root cause of the walk-start
+# overcurrent trips. WalkMove now reads the order from the model's own
+# metadata (self._dof_order in moves/walk.py) instead of a separate constant
+# that can drift out of sync with whatever agent .onnx file is loaded.

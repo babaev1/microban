@@ -4,7 +4,7 @@
 import onnxruntime as ort
 import numpy as np
 
-from constants import MOTOR_TO_ID, KP_DEFAULT, KP_RL, OBSERVATION_DOF_ORDER
+from constants import MOTOR_TO_ID, KP_DEFAULT, KP_RL
 from controller import ControllerProtocol
 from observer import Observation
 from moves.move import MotorCommand, Move, MoveState
@@ -21,21 +21,27 @@ AGENT_NAME = "walk.onnx"
 class WalkMove(Move):
     """Walk using a RL policy trained in simulation."""
 
-    def __init__(self, controller: ControllerProtocol | None = None, start_lerp_duration: float = 0.3) -> None:
+    def __init__(self, controller: ControllerProtocol | None = None, start_lerp_duration: float = 1.5) -> None:
         super().__init__()
         self._controller = controller
-        self._last_action = [0.0] * len(OBSERVATION_DOF_ORDER)
 
         # Load ONNX policy
         self._ort_session = ort.InferenceSession(f"src/agents/{AGENT_NAME}")
 
         self.action_scale = 1.0
 
-        # Reference pose: read from ONNX metadata
+        # Reference pose and per-joint order: read from ONNX metadata. joint_names is the
+        # exact order the policy was trained on for joint_pos/joint_vel/actions — observations
+        # must be built and actions decoded in this order, NOT the constants.py
+        # OBSERVATION_DOF_ORDER, which lists joints in a different order (shoulders before
+        # hips) and previously caused action[i] to be applied to the wrong joint (e.g. a
+        # shoulder-sized action landing on a hip), producing wildly out-of-range targets that
+        # tripped the overcurrent safety.
         meta = self._ort_session.get_modelmeta().custom_metadata_map
-        names = meta["joint_names"].split(",")
+        self._dof_order = meta["joint_names"].split(",")
         positions = [float(v) for v in meta["default_joint_pos"].split(",")]
-        self._default_pose: dict[str, float] = dict(zip(names, positions))
+        self._default_pose: dict[str, float] = dict(zip(self._dof_order, positions))
+        self._last_action = [0.0] * len(self._dof_order)
 
         # on_start ramps target_angles from wherever the robot was holding to
         # _default_pose over this many seconds, instead of jumping there in one
@@ -49,7 +55,7 @@ class WalkMove(Move):
         # Detect reference phase from model input size:
         # base_obs = gyro(3) + proj_grav(3) + pos(N) + vel(N) + action(N) + cmd(3)
         # phase_obs = base_obs + phase(2)
-        base_obs_size = 3 + 3 + 3 * len(OBSERVATION_DOF_ORDER) + 3
+        base_obs_size = 3 + 3 + 3 * len(self._dof_order) + 3
         self._use_reference_phase: bool = self._ort_session.get_inputs()[0].shape[1] > base_obs_size
         self._phase_step = 0
         self._phase_total_steps = 20
@@ -148,7 +154,7 @@ class WalkMove(Move):
         self._last_action = action.tolist()
 
         # Update command
-        for i, name in enumerate(OBSERVATION_DOF_ORDER):
+        for i, name in enumerate(self._dof_order):
             command.target_angles[name] = self._default_pose[name] + action[i] * self.action_scale
 
         # Log positions and voltages
@@ -166,11 +172,11 @@ class WalkMove(Move):
         input_obs.extend(obs.robot_state.projected_gravity)
         
         # Motor positions
-        for name in OBSERVATION_DOF_ORDER:
+        for name in self._dof_order:
             input_obs.append(obs.robot_state.motor_positions[name] - self._default_pose[name])
         
         # Motor velocities
-        for name in OBSERVATION_DOF_ORDER:
+        for name in self._dof_order:
             input_obs.append(obs.robot_state.motor_velocities[name])
         
         # Last action

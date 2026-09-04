@@ -193,11 +193,11 @@ class Scheduler:
         if self.stop_flag_path.exists():
             self.stop_flag_path.unlink()
 
-    def _estimate_total_current(self, robot_state, target_angles: dict[str, float]) -> float:
-        """Estimate the total pack current [A] from whichever signal is available.
+    def _per_motor_currents(self, robot_state, target_angles: dict[str, float]) -> dict[str, float]:
+        """Estimate each motor's |current| [A] from whichever signal is available.
 
         - If present_current was read (Observer.observe_current = True), use the measured
-          sum of |current| over all motors.
+          current directly.
         - Otherwise, fall back to the bam XL330 m6 current proxy (no extra bus read), from
           the (delay-aligned) command target, present_position and present_velocity:
             duty = clip(PROXY_KP * PROXY_ERROR_GAIN * (target - q), ±PROXY_MAX_PWM)
@@ -207,11 +207,11 @@ class Scheduler:
         """
         currents = robot_state.motor_currents
         if currents:
-            return sum(abs(c) for c in currents.values())
+            return {name: abs(c) for name, c in currents.items()}
 
         positions = robot_state.motor_positions
         velocities = robot_state.motor_velocities
-        total = 0.0
+        result: dict[str, float] = {}
         for name, target in target_angles.items():
             pos = positions.get(name)
             if pos is None:
@@ -220,8 +220,12 @@ class Scheduler:
             duty = PROXY_KP * PROXY_ERROR_GAIN * (target - pos)
             duty = max(-PROXY_MAX_PWM, min(PROXY_MAX_PWM, duty))
             current = (PROXY_VIN * duty - PROXY_KT * dq) / PROXY_R
-            total += min(abs(current), BAM_MAX_CURRENT)
-        return total
+            result[name] = min(abs(current), BAM_MAX_CURRENT)
+        return result
+
+    def _estimate_total_current(self, robot_state, target_angles: dict[str, float]) -> float:
+        """Sum of _per_motor_currents() — the total estimated pack current [A]."""
+        return sum(self._per_motor_currents(robot_state, target_angles).values())
 
     def _check_overcurrent(self, robot_state, target_angles: dict[str, float]) -> bool:
         """Report when the estimated total pack current stays above OVERCURRENT_CUTOFF_A
@@ -243,6 +247,20 @@ class Scheduler:
                 end="\r\n",
                 flush=True,
             )
+            # Debug breakdown: which motors are driving the estimate, and by how much
+            # target diverges from present_position (delay-aligned target vs current pos).
+            per_motor = self._per_motor_currents(robot_state, target_angles)
+            positions = robot_state.motor_positions
+            top = sorted(per_motor.items(), key=lambda kv: kv[1], reverse=True)[:6]
+            for name, current in top:
+                target = target_angles.get(name)
+                pos = positions.get(name)
+                err = None if (target is None or pos is None) else target - pos
+                print(
+                    f"  {name}: I~{current:.2f} A  target={target}  pos={pos}  err={err}",
+                    end="\r\n",
+                    flush=True,
+                )
             return True
         return False
 
