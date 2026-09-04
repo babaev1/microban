@@ -102,10 +102,15 @@ class WalkMove(Move):
         }
         
     def on_start(self, obs: Observation, command: MotorCommand) -> None:
+        # Ramp the pose to _default_pose while still holding the stiffer,
+        # pre-walk kp (whatever was in effect, typically KP_DEFAULT) — the
+        # robot stays rigid while it moves to the walk starting stance. Kp is
+        # only dropped to KP_RL right as we hand off to step() below, since
+        # softening the joints while they're still away from the pose the RL
+        # policy was trained to start from (rather than at it) is what let
+        # gravity yank them, spiking the estimated pack current enough to
+        # trip the overcurrent safety (see Scheduler._check_overcurrent).
         if self._start_lerp_time_s is None:
-            if self._controller is not None:
-                ids = list(MOTOR_TO_ID.values())
-                self._controller.sync_write_kp(ids, [KP_RL] * len(ids))
             self._start_lerp_time_s = obs.robot_state.time_s
             self._start_lerp_angles = {
                 name: obs.robot_state.motor_positions.get(name, 0.0) for name in self._default_pose
@@ -116,6 +121,9 @@ class WalkMove(Move):
             command.target_angles[name] = self._start_lerp_angles[name] * (1.0 - t) + target * t
 
         if t >= 1.0:
+            if self._controller is not None:
+                ids = list(MOTOR_TO_ID.values())
+                self._controller.sync_write_kp(ids, [KP_RL] * len(ids))
             self._start_lerp_time_s = None
             self.state = MoveState.ACTIVE
 
