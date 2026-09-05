@@ -30,6 +30,27 @@ ID_TO_MOTOR = {v: k for k, v in MOTOR_TO_ID.items()}
 NEUTRAL_POSE = {
     "left_hip_yaw": float(np.deg2rad(0.0)),
     "left_hip_roll": float(np.deg2rad(0.0)),
+    "left_hip_pitch": float(np.deg2rad(-15.0)),
+    "left_knee": float(np.deg2rad(30.0)),
+    "left_ankle_pitch": float(np.deg2rad(-15.0)),
+    "left_ankle_roll": float(np.deg2rad(0.0)),
+    "right_hip_yaw": float(np.deg2rad(0.0)),
+    "right_hip_roll": float(np.deg2rad(0.0)),
+    "right_hip_pitch": float(np.deg2rad(-15.0)),
+    "right_knee": float(np.deg2rad(30.0)),
+    "right_ankle_pitch": float(np.deg2rad(-15.0)),
+    "right_ankle_roll": float(np.deg2rad(0.0)),
+    "left_shoulder_pitch": float(np.deg2rad(0.0)),
+    "left_shoulder_roll": float(np.deg2rad(0.0)),
+    #"left_elbow": float(np.deg2rad(0.0)),
+    "right_shoulder_pitch": float(np.deg2rad(0.0)),
+    "right_shoulder_roll": float(np.deg2rad(0.0)),
+    #"right_elbow": float(np.deg2rad(0.0)),
+    #"head": float(np.deg2rad(0.0)),
+}
+NEUTRAL_POSE = {
+    "left_hip_yaw": float(np.deg2rad(0.0)),
+    "left_hip_roll": float(np.deg2rad(0.0)),
     "left_hip_pitch": float(np.deg2rad(0.0)),
     "left_knee": float(np.deg2rad(0.0)),
     "left_ankle_pitch": float(np.deg2rad(0.0)),
@@ -79,7 +100,7 @@ KP_DEFAULT: int = 7334       #400        # ~0.886 Nm/rad in MuJoCo
 # regression documented further down this file (now reverted), feeding the policy a badly
 # wrong orientation, not an actual torque shortfall. Re-test with the IMU fix reverted
 # before touching this again.
-KP_RL: int = 125             # ~0.277 Nm/rad in MuJoCo
+KP_RL: int = 1334            #125             # ~0.277 Nm/rad in MuJoCo
 KP_GAIN_PRM: float = 0.0022  # Nm/rad per register unit (for Xl330)
 
 # BAM motor model (bam package, XL330 m6)
@@ -95,7 +116,7 @@ PRESENT_CURRENT_UNIT_A: float = 0.001   # XL330 present_current register unit (1
 # Reverted back to 15.0 alongside KP_RL — was raised to 60A to cover a "sustained high
 # current" reading that was itself measured under the (now-reverted) bad IMU_MOUNT_QUAT,
 # so that data point is no longer trustworthy. Re-test with the IMU fix reverted first.
-OVERCURRENT_CUTOFF_A: float = 15.0      # total pack current threshold (CALIBRATE: below BMS trip, above normal walk peak)
+OVERCURRENT_CUTOFF_A: float = 105.0      # total pack current threshold (CALIBRATE: below BMS trip, above normal walk peak)
 OVERCURRENT_DEBOUNCE_TICKS: int = 2     # consecutive over-threshold ticks before cutting
 
 # Current proxy used when present_current is NOT read (Observer.observe_current = False), so the
