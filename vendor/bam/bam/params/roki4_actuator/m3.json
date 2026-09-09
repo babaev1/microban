@@ -1,0 +1,12 @@
+{"kt": 1.5380143376889075,
+ "R": 0.10852291536664864,
+ "armature": 0.018565413428810653,
+ "current_limit": 6.781771695454543,
+ "control_gain_ratio": 1.1999107061563754,
+ "velocity_gain_ratio": 1.0667617151666529,
+ "q_offset": -0.06109035310605333,
+ "friction_base": 0.11600193191950103,
+ "load_friction_base": 8.605673236756106e-05,
+ "friction_viscous": 0.2619638814437807,
+ "model": "m3",
+ "actuator": "SKS2401"}
