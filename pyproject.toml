@@ -14,7 +14,11 @@ dependencies = [
 
 [dependency-groups]
 sim = [
-    "better-actuator-models",
+    # bam is NOT a dependency here: PyPI's better-actuator-models has no SKS2401 support
+    # (the Roki4's actual servos) and neither does any branch of github.com/Rhoban/bam.
+    # A subset that does is vendored at vendor/bam/ instead — see vendor/bam/README.md
+    # and docs/dev/sim_training_parity.md. `make sim`/`make sim-master` put it on
+    # PYTHONPATH directly; it needs no install step.
     "mujoco>=3.8.1",
 ]
 

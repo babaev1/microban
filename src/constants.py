@@ -100,7 +100,7 @@ KP_DEFAULT: int = 7334       #400        # ~0.886 Nm/rad in MuJoCo
 # regression documented further down this file (now reverted), feeding the policy a badly
 # wrong orientation, not an actual torque shortfall. Re-test with the IMU fix reverted
 # before touching this again.
-KP_RL: int = 1334            #125             # ~0.277 Nm/rad in MuJoCo
+KP_RL: int = 7334            #125             # ~0.277 Nm/rad in MuJoCo
 KP_GAIN_PRM: float = 0.0022  # Nm/rad per register unit (for Xl330)
 
 # BAM motor model (bam package, XL330 m6)

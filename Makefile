@@ -21,8 +21,10 @@ sync:
 setup: sync
 	ssh $(HOST) "bash -l -c 'cd microban && uv sync --frozen'"
 
+# vendor/bam holds the SKS2401-capable subset of the bam package (see
+# vendor/bam/README.md) — it's on PYTHONPATH directly, not a uv dependency.
 sim:
-	PYTHONPATH=src uv run --group sim src/sim/sim_main.py --hz 50
+	PYTHONPATH=src:vendor/bam uv run --group sim src/sim/sim_main.py --hz 50
 
 viewer:
 	PYTHONPATH=src uv run src/sim/viewer_main.py --hz 25
@@ -31,7 +33,7 @@ viewer:
 # machine (e.g. the Pi), broadcast to `make sim-viewer` running on SLAVE (e.g. your
 # laptop, over its own real GPU) instead of opening a local viewer window.
 sim-master:
-	PYTHONPATH=src uv run --group sim src/sim/sim_main.py --hz 50 --stream-to $(SLAVE)
+	PYTHONPATH=src:vendor/bam uv run --group sim src/sim/sim_main.py --hz 50 --stream-to $(SLAVE)
 
 # Real 3D display-only viewer for a remote sim-master. PORT must match the one
 # sim-master's SLAVE address uses (default 9761).

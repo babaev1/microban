@@ -12,12 +12,6 @@ from input.input_source import InputSource, UserInput
 if TYPE_CHECKING:
     from mujoco import MjvOption
 
-# GLFW key codes (no glfw import needed — values are stable)
-_GLFW_KEY_UP = 265
-_GLFW_KEY_DOWN = 264
-_GLFW_KEY_RIGHT = 262
-_GLFW_KEY_LEFT = 263
-
 VELOCITY_STEP = 0.1
 VELOCITY_MAX = 1.0
 
@@ -65,7 +59,8 @@ class MuJoCoInputSource(InputSource):
             print(f"  [{char}]      toggle move '{name}'")
         print("  [i]       toggle IMU frame + terminal display")
         print("  [t]       toggle torque sum display")
-        print("  [arrows]  vx (up/down), vtheta (left/right)")
+        print("  [w/z]     vx (forward/back)")
+        print("  [a/d]     vtheta (turn left/right)")
         print("  [x]       reset velocity")
         print("  [r]       reset robot to initial pose")
         print("  [q]       quit")
@@ -82,6 +77,12 @@ class MuJoCoInputSource(InputSource):
             )
 
     def key_callback(self, keycode: int) -> None:
+        # NOTE: this deliberately avoids GLFW_KEY_UP/DOWN/LEFT/RIGHT (arrow keys).
+        # mujoco.viewer.launch_passive's native GUI reserves all four for its own
+        # controls (Up/Down = playback speed, Left/Right = step back/forward when
+        # paused) and consumes them before this callback ever runs — key_callback
+        # simply never fires for them, so vx/vtheta silently never changed. w/z/a/d
+        # aren't reserved by the viewer (nothing but MOVE_KEYS + the letters below are).
         if keycode in self._keycode_to_move:
             move_name = self._keycode_to_move[keycode]
             with self._lock:
@@ -123,13 +124,13 @@ class MuJoCoInputSource(InputSource):
             self._stop_flag_path.write_text("stop\n", encoding="ascii")
             print("Stop requested")
 
-        elif keycode == _GLFW_KEY_UP:
+        elif keycode == ord("W"):
             self._adjust_velocity("vx", +VELOCITY_STEP)
-        elif keycode == _GLFW_KEY_DOWN:
+        elif keycode == ord("Z"):
             self._adjust_velocity("vx", -VELOCITY_STEP)
-        elif keycode == _GLFW_KEY_RIGHT:
+        elif keycode == ord("D"):
             self._adjust_velocity("vtheta", +VELOCITY_STEP)
-        elif keycode == _GLFW_KEY_LEFT:
+        elif keycode == ord("A"):
             self._adjust_velocity("vtheta", -VELOCITY_STEP)
 
     def _adjust_velocity(self, axis: str, delta: float) -> None:

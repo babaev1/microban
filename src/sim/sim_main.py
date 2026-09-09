@@ -31,11 +31,17 @@ MOVE_KEYS = {"h": "head", "s": "squat", "v": "walk"}
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run microban scheduler in MuJoCo simulation.")
     parser.add_argument("--hz", type=float, default=50.0, metavar="FREQ", help="Scheduler frequency in Hz (default: 50)")
-    parser.add_argument("--delay-act", type=int, default=2, metavar="STEPS", help="Actuation delay in simulator steps (1 step = 0.005 s)")
-    parser.add_argument("--delay-pos", type=int, default=0, metavar="TICKS", help="Motor position read delay in scheduler ticks (1 tick = 20 ms at 50 Hz)")
-    parser.add_argument("--delay-vel", type=int, default=1, metavar="TICKS", help="Motor velocity read delay in ticks")
-    parser.add_argument("--delay-gyro", type=int, default=3, metavar="TICKS", help="Gyro read delay in ticks")
-    parser.add_argument("--delay-quat", type=int, default=4, metavar="TICKS", help="Quaternion (projected gravity) read delay in ticks")
+    # Every --delay-* value below is a MAX: each channel samples its lag uniformly
+    # from [0, MAX] (mjlab's own delay_min_lag is 0 for every delayed term training
+    # uses), resampled continuously rather than held fixed — see mujoco_controller.py's
+    # _DelayBuffer and docs/dev/sim_training_parity.md. Defaults match training exactly:
+    # gyro/quat sample every tick, resampled every 64 ticks (~1.28 s); vel/pos/act
+    # resample every tick/step (mjlab's delay_update_period=0 default).
+    parser.add_argument("--delay-act", type=int, default=0, metavar="MAX_STEPS", help="Actuation delay upper bound, in simulator steps (1 step = 0.005 s). Training: 0 (none).")
+    parser.add_argument("--delay-pos", type=int, default=0, metavar="MAX_TICKS", help="Motor position read delay upper bound, in scheduler ticks (1 tick = 20 ms at 50 Hz). Training: 0 (none).")
+    parser.add_argument("--delay-vel", type=int, default=1, metavar="MAX_TICKS", help="Motor velocity read delay upper bound, in ticks. Training: 1.")
+    parser.add_argument("--delay-gyro", type=int, default=3, metavar="MAX_TICKS", help="Gyro read delay upper bound, in ticks, resampled every 64 ticks. Training: 3.")
+    parser.add_argument("--delay-quat", type=int, default=3, metavar="MAX_TICKS", help="Quaternion (projected gravity) read delay upper bound, in ticks, resampled every 64 ticks. Training: 3.")
     parser.add_argument("--trunk-com-offset", type=float, nargs=3, default=[0.0, 0.0, 0.0], metavar=("X", "Y", "Z"), help="CoM offset on trunk body in meters (body frame)")
     parser.add_argument(
         "--stream-to",

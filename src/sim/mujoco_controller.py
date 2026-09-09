@@ -4,6 +4,7 @@
 import ctypes
 import math
 import os
+import random
 import time
 from collections import deque
 from collections.abc import Callable
@@ -21,14 +22,7 @@ if TYPE_CHECKING:
 from bam.model import load_model as bam_load_model
 from bam.mujoco import MujocoController as BamController
 
-from constants import MOTOR_TO_ID, ID_TO_MOTOR, NEUTRAL_POSE, KP_DEFAULT, BAM_VIN, BAM_VOLTAGE_DROP_GAIN, BAM_VIN_MIN, BAM_MAX_CURRENT
-
-# GLFW key codes matching sim.mujoco_input's arrow-key handling (no glfw
-# import needed here either — values are stable).
-_GLFW_KEY_UP = 265
-_GLFW_KEY_DOWN = 264
-_GLFW_KEY_RIGHT = 262
-_GLFW_KEY_LEFT = 263
+from constants import MOTOR_TO_ID, ID_TO_MOTOR, NEUTRAL_POSE, KP_DEFAULT, BAM_VIN, BAM_VOLTAGE_DROP_GAIN, BAM_VIN_MIN
 
 
 def _can_create_gl_window() -> bool:
@@ -164,15 +158,10 @@ class _SoftwareViewer:
 
     @staticmethod
     def _on_key(event, key_callback: Callable[[int], None]) -> None:
-        arrow_keycodes = {
-            "Up": _GLFW_KEY_UP,
-            "Down": _GLFW_KEY_DOWN,
-            "Right": _GLFW_KEY_RIGHT,
-            "Left": _GLFW_KEY_LEFT,
-        }
-        if event.keysym in arrow_keycodes:
-            key_callback(arrow_keycodes[event.keysym])
-        elif event.char:
+        # Arrow keys have no event.char in Tk (only a keysym) and aren't forwarded —
+        # matching the native GLFW viewer, which reserves them for its own playback
+        # controls and never calls key_callback for them either (see mujoco_input.py).
+        if event.char:
             key_callback(ord(event.char.upper()))
 
     def is_running(self) -> bool:
@@ -270,22 +259,46 @@ SPAWN_TRUNK_PITCH: float = -NEUTRAL_POSE["left_hip_pitch"]
 SPAWN_TRUNK_QUAT: tuple[float, float, float, float] = (
     math.cos(SPAWN_TRUNK_PITCH / 2), 0.0, math.sin(SPAWN_TRUNK_PITCH / 2), 0.0
 )
-# Trunk height [m] at which the flat soles just touch the floor (0.1701), plus
-# 2 mm clearance. Too low and MuJoCo resolves the penetration by ejecting the
-# robot on the first step. It settles to ~0.165 under its own weight.
-SPAWN_TRUNK_Z: float = 0.1721
+# Trunk height [m] at which the flat soles just touch the floor with the current,
+# all-zero NEUTRAL_POSE (measured: 0.246617), plus 2 mm clearance. Too low and MuJoCo
+# resolves the penetration by ejecting the robot on the first step — this is what the
+# previous value (0.1721, left over from a pre-Roki4 robot shape) did: 74 mm of
+# penetration at spawn, 64 contacts, and the robot got thrown up to z=0.29 before
+# settling. Recompute (see docs/dev/sim_training_parity.md) if NEUTRAL_POSE's leg
+# angles ever change.
+SPAWN_TRUNK_Z: float = 0.2486
 
 
 class _DelayBuffer:
-    """Returns values delayed by n_steps ticks (0 = no delay)."""
+    """Returns values delayed by a lag sampled uniformly from [0, max_lag] ticks.
 
-    def __init__(self, initial, n_steps: int) -> None:
-        size = max(1, n_steps + 1)
-        self._buf: deque = deque([initial] * size, maxlen=size)
+    Mirrors mjlab's ObservationTermCfg/BamActuatorCfg delay semantics: every delayed
+    term training actually uses has delay_min_lag=0, so min is hardcoded at 0 here
+    rather than exposed as a parameter. The lag is resampled every `update_period`
+    ticks — 0 (the default) resamples every tick/step, matching mjlab's own
+    delay_update_period=0 default; gyro/projected_gravity use 64, matching training's
+    explicit override for those two terms.
+
+    This distinction matters: holding the lag fixed at its max (the previous
+    implementation) pins the channel at a constant worst case every tick, which is
+    what actually destabilized the walk in `make sim` — sampled the way training
+    samples it, the same max_lag is easily survivable. See
+    docs/dev/sim_training_parity.md.
+    """
+
+    def __init__(self, initial, max_lag: int, update_period: int = 0) -> None:
+        self._max_lag = max_lag
+        self._update_period = update_period
+        self._buf: deque = deque([initial] * (max_lag + 1), maxlen=max_lag + 1)
+        self._tick = 0
+        self._lag = random.randint(0, max_lag)
 
     def push_and_read(self, value):
         self._buf.appendleft(value)
-        return self._buf[-1]
+        if self._update_period <= 0 or self._tick % self._update_period == 0:
+            self._lag = random.randint(0, self._max_lag)
+        self._tick += 1
+        return self._buf[self._lag]
 
     def fill(self, value) -> None:
         for i in range(len(self._buf)):
@@ -294,6 +307,13 @@ class _DelayBuffer:
 
 class MuJoCoController:
     """MuJoCo-backed controller."""
+
+    # Roki4 servo groups, matching training's actuator split (roki_4_constants.py's
+    # ROKI4_MOTOR_JOINT_EXPR_STEEL / _ALU): shoulders and knees are steel-geared
+    # SKS2401s (bam params "roki4_actuator"/"m3"), hips and ankles are aluminium-geared
+    # (bam params "roki4_actuator"/"m3_al") — different kt/R/current limit each.
+    _STEEL_JOINTS: tuple[str, ...] = tuple(n for n in MOTOR_TO_ID if "shoulder" in n or "knee" in n)
+    _ALU_JOINTS: tuple[str, ...] = tuple(n for n in MOTOR_TO_ID if "hip" in n or "ankle" in n)
 
     def __init__(
         self,
@@ -307,19 +327,105 @@ class MuJoCoController:
         # instead of rendering. key_callback then goes unused; drive input from the
         # terminal instead (KeyboardInputSource), since there's no window to bind to.
         state_sender: "StateSender | None" = None,
-        # Actuation delay (command → motor), in simulator steps (default timestep: 0.005 s)
+        # Actuation delay (command → motor): each physics sub-step samples a lag
+        # uniformly from [0, delay_act_steps] simulator steps (default timestep: 0.005 s).
+        # Training has none (0) — see _DelayBuffer.
         delay_act_steps: int = 0,
-        # Sensor delays (motor/IMU → observation), in scheduler ticks (default: 0.02 s)
+        # Sensor delays (motor/IMU → observation): each channel samples a lag uniformly
+        # from [0, delay_*_ticks] scheduler ticks (1 tick = 0.02 s), matching training's
+        # own per-term delay_min_lag=0/delay_max_lag ranges — see _DelayBuffer.
         delay_pos_ticks: int = 0,
         delay_vel_ticks: int = 0,
         delay_gyro_ticks: int = 0,
         delay_quat_ticks: int = 0,
         trunk_com_offset: tuple[float, float, float] = (0.0, 0.0, 0.0),
     ) -> None:
+        assert set(self._STEEL_JOINTS) | set(self._ALU_JOINTS) == set(MOTOR_TO_ID), (
+            "every joint in MOTOR_TO_ID must be either steel (shoulder/knee) or "
+            "aluminium (hip/ankle) — add any new joint name to one of the two groups "
+            "above and confirm which bam roki4_actuator fit (m3 vs m3_al) it should use"
+        )
+
         self._stop_flag_path = Path(stop_flag_path)
         self._reset_source = reset_source
         self._state_sender = state_sender
-        self._model = mujoco.MjModel.from_xml_path(mjcf_path)
+
+        # BAM motor models — two SKS2401 fits (see docs/dev/sim_training_parity.md for
+        # why: the robot's actual servos, not XL330). Built before the MuJoCo model: the
+        # actuator force limit below (vin*kt/R) is derived from these, and BamController's
+        # constructor calls mj_setConst, which resets mjData back to qpos0 — setting the
+        # initial pose first would leave the robot at the origin, half-buried in the
+        # floor. kp/vin match training's roki_4_constants.py (ROKI4_KP_FW/ROKI4_VIN
+        # defaults, 7333.9/11.0); each fit's current limit is loaded from its own JSON,
+        # not set here — the SKS2401 model (Roki4Actuator, a CurrentControlledActuator)
+        # enforces it via model.current_limit, unlike the XL330's actuator.max_current.
+        steel_model = bam_load_model(motor_name="roki4_actuator", model="m3")
+        alu_model = bam_load_model(motor_name="roki4_actuator", model="m3_al")
+        for bam_model in (steel_model, alu_model):
+            bam_model.actuator.kp = KP_DEFAULT
+            bam_model.actuator.vin = BAM_VIN
+
+        # robot.xml declares <position> actuators, but BamController.update() writes a
+        # *torque* into data.ctrl — only valid for <motor> actuators. Training's
+        # bam.mjlab rewrites the same actuators to <motor> before compiling (confirmed by
+        # the exported policy's own metadata: joint_stiffness=1.0, joint_damping=0.0 for
+        # every joint). Left as <position>, MuJoCo instead reads that torque as a
+        # position setpoint and applies kp*(torque - q), which *inverts the sign* on any
+        # joint held away from zero (e.g. the knee at +30 deg) — this was the real cause
+        # of the walk policy's crouch looking too soft to hold.
+        spec = mujoco.MjSpec.from_file(mjcf_path)
+
+        # Solver settings: raw XML has no <option>, so MuJoCo's own compiled defaults
+        # applied (Euler integrator, timestep 0.002, iterations 100/50/35). Training
+        # explicitly sets these (SIM_CFG in microban_velocity_env_cfg.py) to values that
+        # differ on exactly the fields that matter most for a stiff, high-force-limit,
+        # friction-driven system like this one: implicitfast is specifically built to be
+        # more stable than explicit Euler for damped/stiff dynamics (joint friction
+        # recomputed every tick by BAM, SKS2401 force limits up to 155 Nm) — Euler here
+        # was a likely contributor to the sharp/jittery gait and spurious yaw noise.
+        # (jacobian/cone/solver/impratio/gravity already match MuJoCo's own defaults —
+        # set explicitly anyway so this doesn't silently drift if that ever changes.)
+        spec.option.timestep = 0.005
+        spec.option.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
+        spec.option.iterations = 10
+        spec.option.ls_iterations = 20
+        spec.option.ccd_iterations = 100
+        spec.option.tolerance = 1e-8
+        spec.option.ls_tolerance = 0.01
+        spec.option.cone = mujoco.mjtCone.mjCONE_PYRAMIDAL
+        spec.option.jacobian = mujoco.mjtJacobian.mjJAC_AUTO
+        spec.option.solver = mujoco.mjtSolver.mjSOL_NEWTON
+        spec.option.impratio = 1.0
+        spec.option.gravity = (0.0, 0.0, -9.81)
+
+        for act in spec.actuators:
+            if act.name in self._STEEL_JOINTS:
+                bam_model = steel_model
+            elif act.name in self._ALU_JOINTS:
+                bam_model = alu_model
+            else:
+                continue
+            force_limit = bam_model.actuator.vin * bam_model.kt.value / bam_model.R.value
+            act.set_to_motor()
+            act.gear = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+            act.forcelimited = True
+            act.forcerange = (-force_limit, force_limit)
+            act.ctrllimited = True
+            act.ctrlrange = (-force_limit, force_limit)
+
+        # NOTE: foot geom condim was set to 1 here in an earlier pass, on the theory
+        # that training's foot geoms end up condim=1 (its FULL_COLLISION's foot-specific
+        # regex never matches the real "_foot_collision_N" names, so feet fall through to
+        # a generic condim=1 rule — confirmed on env.sim.mj_model.geom_condim). That part
+        # was correct but the conclusion wasn't: MuJoCo resolves a contact PAIR's
+        # dimensionality as max(condim of each geom) when priorities are equal (both 0
+        # here), and the terrain/floor geom is condim=3 in both training and here — so
+        # max(1, 3) = 3 either way. Verified directly on real resolved contacts
+        # (data.contact[i].dim) in both projects: every foot-ground contact is dim=3 in
+        # training too. Setting the foot geom to condim=1 never actually changed ground
+        # friction, so it was removed — it wasn't wrong to try, just inert once checked.
+
+        self._model = spec.compile()
         self._data = mujoco.MjData(self._model)
 
         self._name_to_actuator_idx: dict[str, int] = {}
@@ -347,24 +453,34 @@ class MuJoCoController:
             self._model.body_ipos[trunk_id, 1] += trunk_com_offset[1]
             self._model.body_ipos[trunk_id, 2] += trunk_com_offset[2]
 
-        # BAM motor model — XL330 m6 (DC motor + Stribeck + load-dependent friction)
-        # Built before the initial pose is applied: the BamController constructor
-        # calls mj_setConst, which resets mjData back to qpos0. Setting the pose
-        # first would leave the robot at the origin, half-buried in the floor.
-        bam_model = bam_load_model(motor_name="xl330", model="m6")
-        bam_model.actuator.kp = KP_DEFAULT
-        bam_model.actuator.vin = BAM_VIN
-        # The firmware current limit lives on the actuator, applied by BAM as a
-        # duty-cycle constraint inside compute_control.
-        bam_model.actuator.max_current = BAM_MAX_CURRENT
-        self._bam = BamController(
-            bam_model,
-            list(MOTOR_TO_ID.keys()),
+        self._bam_steel = BamController(
+            steel_model,
+            list(self._STEEL_JOINTS),
             self._model,
             self._data,
             vin_drop_resistance=BAM_VOLTAGE_DROP_GAIN,
             vin_min=BAM_VIN_MIN,
         )
+        self._bam_alu = BamController(
+            alu_model,
+            list(self._ALU_JOINTS),
+            self._model,
+            self._data,
+            vin_drop_resistance=BAM_VOLTAGE_DROP_GAIN,
+            vin_min=BAM_VIN_MIN,
+        )
+        self._bams: tuple[BamController, ...] = (self._bam_steel, self._bam_alu)
+        self._name_to_bam: dict[str, BamController] = {
+            **{n: self._bam_steel for n in self._STEEL_JOINTS},
+            **{n: self._bam_alu for n in self._ALU_JOINTS},
+        }
+        # kt differs by servo group; cached once since it's a fixed fitted parameter,
+        # not something that changes at runtime (unlike vin, which BamController itself
+        # perturbs transiently for the voltage-drop model and restores after each update).
+        self._name_to_kt: dict[str, float] = {
+            **{n: steel_model.kt.value for n in self._STEEL_JOINTS},
+            **{n: alu_model.kt.value for n in self._ALU_JOINTS},
+        }
 
         # Set initial pose to neutral so the robot starts upright
         self._apply_neutral_pose()
@@ -381,8 +497,10 @@ class MuJoCoController:
             mid: _DelayBuffer(0.0, delay_vel_ticks)
             for mid in MOTOR_TO_ID.values()
         }
-        self._delay_gyro = _DelayBuffer((0.0, 0.0, 0.0), delay_gyro_ticks)
-        self._delay_quat = _DelayBuffer((1.0, 0.0, 0.0, 0.0), delay_quat_ticks)
+        # Training resamples base_ang_vel/projected_gravity's lag every 64 control
+        # steps (~1.28 s at 50 Hz), not every tick — see _DelayBuffer.
+        self._delay_gyro = _DelayBuffer((0.0, 0.0, 0.0), delay_gyro_ticks, update_period=64)
+        self._delay_quat = _DelayBuffer((1.0, 0.0, 0.0, 0.0), delay_quat_ticks, update_period=64)
         self._delay_act = {
             mid: _DelayBuffer(
                 self._data.qpos[self._name_to_qpos_idx[ID_TO_MOTOR[mid]]],
@@ -414,6 +532,18 @@ class MuJoCoController:
                 self._viewer = mujoco.viewer.launch_passive(
                     self._model, self._data, key_callback=key_callback
                 )
+                # Default free camera is centered on the world origin and stays there as
+                # the robot walks away from it. Track the trunk instead (values match
+                # training's own viewer config for this robot: VIEWER_CONFIG in
+                # mjlab_roki6's microban_velocity_env_cfg.py) — the user can still
+                # orbit/zoom around it with the mouse afterward, same as any other
+                # MuJoCo camera mode.
+                trunk_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_BODY, "trunk")
+                self._viewer.cam.trackbodyid = trunk_id
+                self._viewer.cam.type = mujoco.mjtCamera.mjCAMERA_TRACKING
+                self._viewer.cam.distance = 3.0
+                self._viewer.cam.azimuth = 90.0
+                self._viewer.cam.elevation = -15.0
 
         # Sensor indices for IMU readout
         self._sensor_orientation = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_SENSOR, "orientation")
@@ -424,14 +554,16 @@ class MuJoCoController:
         return self._viewer.opt
 
     def set_kp(self, kp: float) -> None:
-        self._bam.model.actuator.kp = kp
+        for bam in self._bams:
+            bam.model.actuator.kp = kp
 
     def sync_read_kp(self, ids: list[int]) -> list[int]:
-        kp = int(self._bam.model.actuator.kp)
+        kp = int(self._bam_steel.model.actuator.kp)
         return [kp] * len(ids)
 
     def sync_write_kp(self, ids: list[int], gains: list[int]) -> None:
-        self._bam.model.actuator.kp = gains[0]
+        for bam in self._bams:
+            bam.model.actuator.kp = gains[0]
 
     def sync_write_torque_enable(self, ids: list[int], values: list[bool]) -> None:
         pass
@@ -448,9 +580,11 @@ class MuJoCoController:
 
         for _ in range(self._steps_per_tick):
             for motor_id, pos in cmd.items():
+                name = ID_TO_MOTOR[motor_id]
                 delayed_pos = self._delay_act[motor_id].push_and_read(pos)
-                self._bam.set_q_target(ID_TO_MOTOR[motor_id], delayed_pos)
-            self._bam.update()
+                self._name_to_bam[name].set_q_target(name, delayed_pos)
+            for bam in self._bams:
+                bam.update()
             mujoco.mj_step(self._model, self._data)
 
         if self._state_sender is not None:
@@ -500,9 +634,12 @@ class MuJoCoController:
     def sync_read_present_current(self, ids: list[int]) -> list[float]:
         # Motor current from the torque applied by the bam model: I = torque / kt.
         # ctrl holds the (current-clipped) torque set in MujocoController.update().
-        kt = self._bam.model.kt.value
+        # kt is per servo group (steel vs aluminium SKS2401 fit — see _name_to_kt).
         return [
-            float(self._data.ctrl[self._name_to_actuator_idx[ID_TO_MOTOR[mid]]] / kt)
+            float(
+                self._data.ctrl[self._name_to_actuator_idx[ID_TO_MOTOR[mid]]]
+                / self._name_to_kt[ID_TO_MOTOR[mid]]
+            )
             for mid in ids
         ]
 
@@ -557,9 +694,10 @@ class MuJoCoController:
         BAM initialises its targets to zero, so without this the first update()
         would drive every joint away from the neutral pose.
         """
-        self._bam.model.actuator.reset()
+        for bam in self._bams:
+            bam.model.actuator.reset()
         for name, qpos_idx in self._name_to_qpos_idx.items():
-            self._bam.set_q_target(name, self._data.qpos[qpos_idx])
+            self._name_to_bam[name].set_q_target(name, self._data.qpos[qpos_idx])
 
     def reset(self) -> None:
         """Reset the simulation to the initial neutral standing pose."""
