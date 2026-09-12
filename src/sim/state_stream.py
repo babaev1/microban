@@ -35,21 +35,46 @@ if TYPE_CHECKING:
 _HEADER = struct.Struct("<IIII")
 _MAGIC = 0x6D42_6F31  # "mBo1": microban state-stream, format version 1
 
+# Optional trailer, appended after qpos/qvel only by a master that has real IMU data to
+# offer (e.g. hw_state_stream.py — sim_main.py's physics master never sends one, since
+# BAM's model has no equivalent onboard IMU reading). gyro (3) + accel (3), both raw
+# sensor-frame units straight from the sensor (not SI — see hw_state_stream.py's
+# comments on this), then a orientation quaternion (4, w-x-y-z, NOT necessarily unit
+# length — see the same comments) — all float64, matching qpos/qvel's own dtype.
+# Presence is inferred from payload length (see StateReceiver._apply), not a header
+# flag, so this stays a pure append and old-format (no-IMU) packets are untouched.
+_IMU_TRAILER = struct.Struct("<10d")
+
 DEFAULT_STREAM_PORT = 9761
 
 
 class StateSender:
-    """Master side: broadcasts (qpos, qvel) over UDP once per tick. Fire-and-forget."""
+    """Master side: broadcasts (qpos, qvel[, imu]) over UDP once per tick. Fire-and-forget."""
 
     def __init__(self, host: str, port: int) -> None:
         self._addr = (host, port)
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._seq = 0
 
-    def send(self, model: "mujoco.MjModel", data: "mujoco.MjData") -> None:
+    def send(
+        self,
+        model: "mujoco.MjModel",
+        data: "mujoco.MjData",
+        imu: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float, float]] | None = None,
+    ) -> None:
+        """Broadcast one state snapshot.
+
+        ``imu``, when given, is ``(gyro_xyz, accel_xyz, quat_wxyz)`` — see
+        ``_IMU_TRAILER`` above — and is appended after qpos/qvel for a receiver that
+        knows to look for it (see sim_viewer_client.py's IMU arrows); a receiver that
+        doesn't still applies qpos/qvel from the same packet unaffected.
+        """
         header = _HEADER.pack(_MAGIC, self._seq, model.nq, model.nv)
         self._seq = (self._seq + 1) & 0xFFFFFFFF
         payload = header + data.qpos.tobytes() + data.qvel.tobytes()
+        if imu is not None:
+            gyro, accel, quat = imu
+            payload += _IMU_TRAILER.pack(*gyro, *accel, *quat)
         try:
             self._sock.sendto(payload, self._addr)
         except OSError:
@@ -75,6 +100,11 @@ class StateReceiver:
         self._sock.setblocking(False)
         self._timeout = timeout
         self._warned_mismatch = False
+        # (gyro_xyz, accel_xyz, quat_wxyz) from the most recently applied packet, or
+        # None if that packet carried no IMU trailer (e.g. sim_main.py's physics
+        # stream). Never cleared between packets on its own — a consumer that cares
+        # should treat a long-stale value as "no IMU," e.g. by tracking its own poll().
+        self.last_imu: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float, float]] | None = None
 
     def poll(self, data: "mujoco.MjData") -> bool:
         """Apply the latest available packet into ``data.qpos``/``data.qvel``.
@@ -115,12 +145,21 @@ class StateReceiver:
                 )
                 self._warned_mismatch = True
             return False
-        expected_len = _HEADER.size + (nq + nv) * 8
-        if len(payload) != expected_len:
+        base_len = _HEADER.size + (nq + nv) * 8
+        if len(payload) == base_len:
+            has_imu = False
+        elif len(payload) == base_len + _IMU_TRAILER.size:
+            has_imu = True
+        else:
             return False
         offset = _HEADER.size
         data.qpos[:] = np.frombuffer(payload, dtype=np.float64, count=nq, offset=offset)
         data.qvel[:] = np.frombuffer(payload, dtype=np.float64, count=nv, offset=offset + nq * 8)
+        if has_imu:
+            fields = _IMU_TRAILER.unpack_from(payload, base_len)
+            self.last_imu = (fields[0:3], fields[3:6], fields[6:10])
+        else:
+            self.last_imu = None
         return True
 
     def close(self) -> None:

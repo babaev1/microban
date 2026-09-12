@@ -1,13 +1,15 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 Marc Duclusaud
 
-"""Stream the real robot's actuator positions into a remote MuJoCo viewer.
+"""Stream the real robot's actuator positions and onboard IMU into a remote MuJoCo viewer.
 
-Runs on the Orange Pi. Reads actuator positions from the STM32 motor controller over
-/dev/ttyS2 (zubr_link.py) and rebroadcasts them using the exact same UDP wire format
-sim_main.py --stream-to uses (sim/state_stream.py) — so the same
-`sim_viewer_client.py` / `make sim-viewer` running on a laptop renders it unmodified,
-without knowing whether the state came from real hardware or a physics step.
+Runs on the Orange Pi. Reads actuator positions and the STM32's onboard gyro/
+accelerometer/quaternion from the motor controller over /dev/ttyS2 (zubr_link.py) and
+rebroadcasts them using the same UDP wire format sim_main.py --stream-to uses
+(sim/state_stream.py), plus an IMU trailer that format supports — so the same
+`sim_viewer_client.py` / `make sim-viewer` running on a laptop renders both the pose
+and (as three arrows above the robot's head) the raw IMU reading, without knowing
+whether any of it came from real hardware or a physics step.
 
 No physics runs here at all: the MuJoCo model is loaded only to get the (qpos, qvel)
 layout right (same joint ordering as scene.xml), never stepped. Every poll leaves all
@@ -33,43 +35,33 @@ from constants import MOTOR_SIGN, MOTOR_TO_ID
 from sim.state_stream import DEFAULT_STREAM_PORT, StateSender, parse_host_port
 from zubr_link import DEFAULT_BAUDRATE, DEFAULT_PORT, MOTOR_COUNT, ZubrLink, ticks_to_rad
 
-# TODO(calibrate on the real board): physical wiring order of the STM32's 16 motor
-# slots (both the goal-position command array and the position/velocity telemetry
-# array in zubr_link.py's protocol) — index i here is slot i on the board. This is
-# NOT derived from MOTOR_TO_ID: that dict's values are Dynamixel-style bus IDs used by
-# a different controller (RobotController/rustypot) and its key order is just
-# source-file order, neither of which says anything about STM32 wiring — editing
-# MOTOR_TO_ID's numbers has no effect here. Edit THIS list directly, in slot order, to
-# calibrate. Placeholder below just lists all 16 MOTOR_TO_ID joints in their dict
-# order as a starting guess. To verify: move one joint by hand and see which slot's
-# telemetry position changes, then put that joint's name at that index.
-SLOT_TO_JOINT: tuple[str, ...] = (
-    "right_shoulder_pitch",     # slot 0
-    "left_shoulder_pitch",      # slot 1
-    "right_shoulder_roll",      # slot 2
-    "left_shoulder_roll",       # slot 3
-    "right_hip_yaw",            # slot 4
-    "left_hip_yaw",             # slot 5
-    "right_hip_roll",           # slot 6
-    "left_hip_roll",            # slot 7
-    "right_hip_pitch",          # slot 8
-    "left_hip_pitch",           # slot 9
-    "right_knee",               # slot 10
-    "left_knee",                # slot 11
-    "right_ankle_pitch",        # slot 12
-    "left_ankle_pitch",         # slot 13
-    "right_ankle_roll",         # slot 14
-    "left_ankle_roll",          # slot 15
-)
-assert len(SLOT_TO_JOINT) == MOTOR_COUNT, (
-    f"SLOT_TO_JOINT must have exactly {MOTOR_COUNT} entries (one per STM32 motor "
-    f"slot), got {len(SLOT_TO_JOINT)}"
-)
-assert len(set(SLOT_TO_JOINT)) == MOTOR_COUNT, "SLOT_TO_JOINT has a duplicate joint name"
-assert set(SLOT_TO_JOINT) <= set(MOTOR_TO_ID), (
-    f"SLOT_TO_JOINT names must all be keys of MOTOR_TO_ID (constants.py); "
-    f"unknown: {set(SLOT_TO_JOINT) - set(MOTOR_TO_ID)}"
-)
+# STM32 slot order (which of the 16 telemetry/command array slots is which joint) is
+# read from MOTOR_TO_ID's values directly (constants.py) — RobotController's rustypot
+# bus is dead code on this robot now, so those numbers are free to mean "STM32 slot
+# index" instead of a Dynamixel bus ID. This is calibrated by moving one joint by hand
+# and editing MOTOR_TO_ID[name] to whichever slot's telemetry position changed — that
+# one dict is now the single place to edit, nothing in this file needs touching.
+#
+# Calibration is expected to be incremental: build_slot_map() below tolerates joints
+# whose MOTOR_TO_ID value isn't a valid, unique slot yet (prints a warning and leaves
+# that joint out of the stream — its qpos just stays 0 — rather than refusing to run).
+def build_slot_map(motor_to_id: dict[str, int]) -> dict[int, str]:
+    slot_to_joint: dict[int, str] = {}
+    claimed_by: dict[int, str] = {}
+    for name, slot in motor_to_id.items():
+        if not (0 <= slot < MOTOR_COUNT):
+            print(f"hw_state_stream: {name!r} has MOTOR_TO_ID value {slot} — out of STM32 slot range [0, {MOTOR_COUNT}); not streamed until recalibrated.", flush=True)
+            continue
+        if slot in claimed_by:
+            print(f"hw_state_stream: {name!r} and {claimed_by[slot]!r} both claim slot {slot} in MOTOR_TO_ID — neither is streamed until this is resolved.", flush=True)
+            slot_to_joint.pop(slot, None)
+            continue
+        claimed_by[slot] = name
+        slot_to_joint[slot] = name
+    missing = MOTOR_COUNT - len(slot_to_joint)
+    if missing:
+        print(f"hw_state_stream: {missing} of {MOTOR_COUNT} STM32 slots have no (valid, unique) joint in MOTOR_TO_ID yet — those joints will stay at 0 in the viewer.", flush=True)
+    return slot_to_joint
 
 # Spawn pose of the trunk free joint — matches sim/mujoco_controller.py's
 # SPAWN_TRUNK_Z/SPAWN_TRUNK_QUAT for NEUTRAL_POSE's current all-zero angles (identity
@@ -78,6 +70,26 @@ assert set(SLOT_TO_JOINT) <= set(MOTOR_TO_ID), (
 # (see mujoco_controller.py's comment) if NEUTRAL_POSE's hip pitch ever becomes nonzero.
 _SPAWN_TRUNK_Z = 0.2486
 _SPAWN_TRUNK_QUAT = (1.0, 0.0, 0.0, 0.0)
+
+
+def _imu_from_telemetry(telemetry) -> tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float, float]]:
+    """Build the (gyro, accel, quat) trailer state_stream.StateSender.send() expects.
+
+    TODO(calibrate on the real board): these are the STM32's raw register units,
+    passed through unconverted — no LSB scale factor for gyro/accel is documented
+    anywhere this project has access to (zubr.py just says "int16 - imu.gyro.x" etc,
+    no units), and this onboard IMU's mounting rotation relative to the trunk is
+    likewise unknown (constants.IMU_MOUNT_QUAT is for the *other* IMU — the separate
+    I2C BMI088 imu_reader.py reads — not necessarily this one). The viewer only uses
+    these for a live directional indicator (see sim_viewer_client.py's arrows), which
+    tolerates unknown scale/mounting far better than any numeric use would — but don't
+    feed this into anything that assumes real units or a trunk-frame mounting without
+    fixing this first.
+    """
+    gyro = tuple(float(v) for v in telemetry.gyro_raw)
+    accel = tuple(float(v) for v in telemetry.acc_raw)
+    qx, qy, qz, qw = (float(v) for v in telemetry.quat_raw)
+    return gyro, accel, (qw, qx, qy, qz)
 
 
 def main() -> None:
@@ -102,8 +114,9 @@ def main() -> None:
     model = mujoco.MjModel.from_xml_path(args.mjcf_path)
     data = mujoco.MjData(model)
 
+    slot_to_joint = build_slot_map(MOTOR_TO_ID)
     joint_qpos_idx: dict[str, int] = {}
-    for name in SLOT_TO_JOINT:
+    for name in slot_to_joint.values():
         joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
         if joint_id < 0:
             raise ValueError(f"Joint '{name}' not found in MJCF model {args.mjcf_path!r}")
@@ -129,7 +142,7 @@ def main() -> None:
             if telemetry is None:
                 dropped += 1
             else:
-                for slot, name in enumerate(SLOT_TO_JOINT):
+                for slot, name in slot_to_joint.items():
                     # MOTOR_SIGN is the hardware->sim direction convention the rest of
                     # the codebase already uses for these joint names (RobotController
                     # applies it the same way for the rustypot/Dynamixel bus) — reused
@@ -138,7 +151,7 @@ def main() -> None:
                     angle = MOTOR_SIGN[name] * ticks_to_rad(telemetry.motor_positions[slot])
                     data.qpos[joint_qpos_idx[name]] = angle
                 mujoco.mj_forward(model, data)
-                sender.send(model, data)
+                sender.send(model, data, imu=_imu_from_telemetry(telemetry))
                 sent += 1
 
             elapsed = time.perf_counter() - tick_start

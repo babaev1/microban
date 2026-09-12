@@ -75,6 +75,11 @@ corrupting the unpack.
 Assumes both machines are little-endian (true for the Pi's ARM Linux and any
 x86_64/ARM laptop) — no byte-swapping is done.
 
+A master with real IMU data to offer (there is no such thing in this physics stream —
+BAM has no onboard-IMU equivalent) can append an optional trailer to the same packet;
+see [`hw_stream.md`](hw_stream.md#wire-format-addition) for that and the three arrows
+`sim_viewer_client.py` draws from it.
+
 ## Choosing between this and X11 forwarding
 
 - **This (master/slave streaming)**: real 3D viewer, needs your laptop and the Pi on
