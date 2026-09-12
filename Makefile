@@ -1,4 +1,4 @@
-.PHONY: sync setup run stop shutdown voltage imu sim viewer sim-master sim-viewer gamepad-headless-enable gamepad-headless-disable
+.PHONY: sync setup run stop shutdown voltage imu sim viewer sim-master sim-viewer hw-stream gamepad-headless-enable gamepad-headless-disable
 
 HOST ?= microban
 ID ?=
@@ -39,6 +39,13 @@ sim-master:
 # sim-master's SLAVE address uses (default 9761).
 sim-viewer:
 	PYTHONPATH=src uv run --group sim src/sim/sim_viewer_client.py --listen 0.0.0.0:$(PORT)
+
+# Streams the real robot's actuator positions (over the STM32 link, /dev/ttyS2) to a
+# remote sim_viewer_client.py, for live visualization instead of a physics stream. Run
+# directly on the Pi (this Makefile lives in ~/microban there too); PORT must match
+# `make sim-viewer` on SLAVE. See docs/dev/hw_stream.md.
+hw-stream:
+	PYTHONPATH=src:vendor/bam uv run --group sim src/hw_state_stream.py --stream-to $(SLAVE)
 
 run: sync
 	ssh -tt $(HOST) "bash -l -c 'cd microban && PYTHONPATH=src .venv/bin/python src/main.py'"

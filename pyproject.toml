@@ -20,6 +20,11 @@ sim = [
     # and docs/dev/sim_training_parity.md. `make sim`/`make sim-master` put it on
     # PYTHONPATH directly; it needs no install step.
     "mujoco>=3.8.1",
+    # Only used by src/hw_state_stream.py (real robot -> remote MuJoCo viewer, see
+    # docs/dev/hw_stream.md) to talk to the STM32 motor controller over /dev/ttyS2. It
+    # lives in this group rather than the base dependencies because that script is
+    # meaningless without mujoco too — both come in together via `--group sim`.
+    "pyserial>=3.5",
 ]
 
 [tool.uv]
