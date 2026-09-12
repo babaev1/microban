@@ -40,7 +40,7 @@ from sim.state_stream import DEFAULT_STREAM_PORT, StateReceiver, parse_host_port
 
 # How far above the head-proxy site the arrows are rooted, in meters (world Z, i.e.
 # straight up regardless of the robot's own tilt).
-_ARROW_ANCHOR_HEIGHT = 0.10
+_ARROW_ANCHOR_HEIGHT = 0.20
 
 _ARROW_ORIENTATION_RGBA = np.array([0.2, 0.4, 1.0, 1.0], dtype=np.float32)
 _ARROW_ACCEL_RGBA = np.array([1.0, 0.2, 0.2, 1.0], dtype=np.float32)
