@@ -1,15 +1,18 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 Marc Duclusaud
 
-"""Stream the real robot's actuator positions and onboard IMU into a remote MuJoCo viewer.
+"""Stream the real robot's actuator positions and IMU observation into a remote MuJoCo viewer.
 
-Runs on the Orange Pi. Reads actuator positions and the STM32's onboard gyro/
-accelerometer/quaternion from the motor controller over /dev/ttyS2 (zubr_link.py) and
-rebroadcasts them using the same UDP wire format sim_main.py --stream-to uses
+Runs on the Orange Pi. Reads actuator positions and the STM32's onboard BHI260
+gyro/quaternion from the motor controller over /dev/ttyS2 (zubr_link.py), reduces the
+IMU reading to exactly the two channels moves/walk.py's RL policy actually observes —
+gyro and gravity projected into body frame — using the *same* math observer.py uses
+for the real BMI088 (imu_reader.imu_quat_to_body then quat_apply_inverse), and
+rebroadcasts everything using the same UDP wire format sim_main.py --stream-to uses
 (sim/state_stream.py), plus an IMU trailer that format supports — so the same
 `sim_viewer_client.py` / `make sim-viewer` running on a laptop renders both the pose
-and (as three arrows above the robot's head) the raw IMU reading, without knowing
-whether any of it came from real hardware or a physics step.
+and (as two arrows above the robot's head) that observation, without knowing whether
+any of it came from real hardware or a physics step.
 
 No physics runs here at all: the MuJoCo model is loaded only to get the (qpos, qvel)
 layout right (same joint ordering as scene.xml), never stepped. Every poll leaves all
@@ -30,8 +33,10 @@ import argparse
 import time
 
 import mujoco
+import numpy as np
 
-from constants import MOTOR_SIGN, MOTOR_TO_ID
+from constants import MOTOR_SIGN, MOTOR_TO_ID, ZUBR_IMU_MOUNT_QUAT
+from imu_reader import imu_quat_to_body, quat_apply_inverse
 from sim.state_stream import DEFAULT_STREAM_PORT, StateSender, parse_host_port
 from zubr_link import DEFAULT_BAUDRATE, DEFAULT_PORT, MOTOR_COUNT, ZubrLink, ticks_to_rad
 
@@ -72,24 +77,40 @@ _SPAWN_TRUNK_Z = 0.2486
 _SPAWN_TRUNK_QUAT = (1.0, 0.0, 0.0, 0.0)
 
 
-def _imu_from_telemetry(telemetry) -> tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float, float]]:
-    """Build the (gyro, accel, quat) trailer state_stream.StateSender.send() expects.
+def _imu_from_telemetry(telemetry) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+    """Build the (gyro, projected_gravity) trailer state_stream.StateSender.send() expects.
 
-    TODO(calibrate on the real board): these are the STM32's raw register units,
-    passed through unconverted — no LSB scale factor for gyro/accel is documented
-    anywhere this project has access to (zubr.py just says "int16 - imu.gyro.x" etc,
-    no units), and this onboard IMU's mounting rotation relative to the trunk is
-    likewise unknown (constants.IMU_MOUNT_QUAT is for the *other* IMU — the separate
-    I2C BMI088 imu_reader.py reads — not necessarily this one). The viewer only uses
-    these for a live directional indicator (see sim_viewer_client.py's arrows), which
-    tolerates unknown scale/mounting far better than any numeric use would — but don't
-    feed this into anything that assumes real units or a trunk-frame mounting without
-    fixing this first.
+    This reads gyro and quaternion off the STM32's onboard BHI260 (already a fused
+    orientation estimate — chip does its own sensor fusion, no Madgwick step needed
+    here) and reduces them to exactly the two channels moves/walk.py's RL policy
+    observes, the *same way* observer.py.read_state() derives them from the real
+    BMI088: rotate the quaternion into body frame (imu_quat_to_body), then project
+    world gravity through it (quat_apply_inverse). Raw accelerometer is read by
+    zubr_link.py but not used here — the RL pipeline this mirrors never uses it either
+    (see moves/walk.py's build_observation()), only the gravity direction the fused
+    quaternion implies.
+
+    TODO(calibrate on the real board):
+    - Gyro stays in the STM32's raw register units, unconverted — no LSB scale factor
+      for it is documented anywhere this project has access to (zubr.py just says
+      "int16 - imu.gyro.x", no units).
+    - ZUBR_IMU_MOUNT_QUAT (constants.py) — this BHI260's mounting rotation relative to
+      the trunk — is an unverified identity placeholder, unlike IMU_MOUNT_QUAT (the
+      *separate* I2C BMI088 imu_reader.py reads, already reverified against real
+      mounting). The quaternion itself is normalized before use, which sidesteps its
+      own unknown LSB scale for any purpose that's purely a rotation (true here).
     """
     gyro = tuple(float(v) for v in telemetry.gyro_raw)
-    accel = tuple(float(v) for v in telemetry.acc_raw)
+
     qx, qy, qz, qw = (float(v) for v in telemetry.quat_raw)
-    return gyro, accel, (qw, qx, qy, qz)
+    quat = np.array([qw, qx, qy, qz], dtype=np.float64)
+    norm = np.linalg.norm(quat)
+    quat_wxyz = (1.0, 0.0, 0.0, 0.0) if norm < 1e-9 else tuple(quat / norm)
+
+    body_quat = imu_quat_to_body(quat_wxyz, mount_quat=ZUBR_IMU_MOUNT_QUAT)
+    projected_gravity = tuple(float(v) for v in quat_apply_inverse(list(body_quat), [0.0, 0.0, -1.0]))
+
+    return gyro, projected_gravity
 
 
 def main() -> None:

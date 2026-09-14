@@ -1,10 +1,12 @@
-# Visualizing the real robot's pose and IMU in a remote MuJoCo viewer
+# Visualizing the real robot's pose and IMU observation in a remote MuJoCo viewer
 
 Same idea as the [master/slave physics stream](sim_stream.md), but the Orange Pi's
 "master" side is the real robot instead of a physics step: it reads actual actuator
-positions and the STM32's onboard IMU off the motor controller and rebroadcasts them
-over the same wire format (plus an optional trailer, see below), so the unmodified
-`sim_viewer_client.py` renders live hardware state instead of a simulation.
+positions and the STM32's onboard BHI260 IMU off the motor controller, reduces the IMU
+reading to the same two-channel observation `moves/walk.py`'s RL policy actually uses,
+and rebroadcasts everything over the same wire format (plus an optional trailer, see
+below), so the unmodified `sim_viewer_client.py` renders live hardware state instead
+of a simulation.
 
 This never sends motor commands (every poll leaves all 16 motors relaxed — see
 `zubr_link.RELAX_POSITION`), so it's safe to run at any time, including while the
@@ -20,8 +22,12 @@ robot is being moved by hand or driven by another process.
 - [`src/sim/state_stream.py`](../../src/sim/state_stream.py) — shared UDP wire format;
   gained an optional IMU trailer (see "Wire format" below) that only this script sends.
 - [`src/sim/sim_viewer_client.py`](../../src/sim/sim_viewer_client.py) — unchanged for
-  a physics master; when the packet carries an IMU trailer, also draws the three arrows
+  a physics master; when the packet carries an IMU trailer, also draws the two arrows
   described below.
+- [`src/imu_reader.py`](../../src/imu_reader.py) — `imu_quat_to_body()` gained an
+  optional `mount_quat` parameter (default unchanged) so `hw_state_stream.py` can reuse
+  it with `ZUBR_IMU_MOUNT_QUAT` instead of the BMI088's `IMU_MOUNT_QUAT`.
+- `src/constants.py`: added `ZUBR_IMU_MOUNT_QUAT` (identity placeholder, see below).
 - `Makefile`'s `hw-stream` target.
 - `pyproject.toml`: added `pyserial` to the `sim` dependency group (this script needs
   both `serial` and `mujoco`, so it rides along with `--group sim` like `sim-master`
@@ -53,14 +59,18 @@ uv sync --group sim   # installs mujoco + pyserial into .venv
 
 ## What it does and doesn't do
 
-- Reads all 16 actuator positions plus the onboard gyro/accelerometer/quaternion once
-  per tick over `/dev/ttyS2` ([`src/zubr_link.py`](../../src/zubr_link.py), formalizing
+- Reads all 16 actuator positions plus the onboard BHI260's gyro/quaternion once per
+  tick over `/dev/ttyS2` ([`src/zubr_link.py`](../../src/zubr_link.py), formalizing
   the protocol prototyped in `~/zubr.py`: one fixed-size, CRC16-guarded
-  request/response transaction per call).
+  request/response transaction per call). The BHI260 does its own onboard sensor
+  fusion (like the BMI088 below, but chip-side rather than the software Madgwick
+  filter `imu_reader.py` runs) — `quat_raw` arrives already fused, no extra filtering
+  needed here.
 - Converts raw encoder ticks to radians (16384 ticks = 2π rad) and writes them into a
   local, never-stepped `MjData`'s `qpos` — same joint layout as `scene.xml` — then
   sends it with `StateSender`, identical to what `sim_main.py --stream-to` sends, plus
-  the raw IMU reading as an extra trailer that format now supports.
+  an IMU observation as an extra trailer that format now supports (see "IMU arrows"
+  below).
 - Does **not** run any physics (`mj_step` is never called) and does **not** command
   the motors — it only issues the STM32 protocol's mandatory read/relax directive to
   get a telemetry frame back.
@@ -101,36 +111,50 @@ visibly offset from the real robot's pose at rest, that's the next thing to chec
 
 ## IMU arrows
 
-Three arrows, rooted at a point 10cm above the "imu" site (the best stand-in for "the
-robot's head" the model currently has — its actual head body/joint is commented out of
-`robot.xml`), drawn by `sim_viewer_client.py` whenever a packet carries the IMU
-trailer:
+The values streamed and drawn are **exactly the two channels `moves/walk.py`'s RL
+policy observes** — gyro and gravity projected into body frame — computed
+`hw_state_stream.py`-side (`_imu_from_telemetry()`) the *same way*
+[`observer.py`](../../src/observer.py) computes them for the real BMI088:
+`imu_reader.imu_quat_to_body()` (BHI260 quaternion → body frame, using a
+BHI260-specific mount constant) then `imu_reader.quat_apply_inverse()` (world gravity
+`(0,0,-1)` projected through that orientation). Raw accelerometer is read off the
+board but not used — the RL pipeline this mirrors doesn't use it either.
+
+Two arrows, rooted at a point above the "imu" site (the best stand-in for "the robot's
+head" the model currently has — its actual head body/joint is commented out of
+`robot.xml`), drawn by `sim_viewer_client.py` whenever a packet carries the trailer.
+Both are body-frame vectors drawn **without any further rotation**: `hw_state_stream.py`
+has no base-orientation sensor for the trunk itself, so the rendered trunk is always
+upright (identity) — meaning body frame and this render's frame coincide, and a real
+lean shows up as these arrows tilting away from straight-down/zero even though the
+mesh doesn't move:
 
 | Color | Source | Meaning |
 |---|---|---|
-| blue | quaternion | The IMU's own reported "up," in world frame — visualizes orientation directly. Fixed length (it's a pure direction). |
-| red | accelerometer | Raw accel vector rotated into world frame by that same orientation — should point straight down (opposite the blue arrow) when the robot is still and the fusion is healthy; divergence between them is a visible sanity signal. |
-| green | gyro | Raw gyro vector (rotation axis), likewise rotated into world frame — near-zero length at rest, longer while turning. |
+| red | projected gravity | Unit vector; points straight down when the robot is level, leans with real tilt otherwise. |
+| green | gyro | Raw gyro vector (rotation axis) — near-zero length at rest, longer while turning. |
 
-Caveats, both in `hw_state_stream.py`'s `_imu_from_telemetry()`:
-- **Units are raw STM32 register values, not SI** — `~/zubr.py` documents no LSB scale
-  for gyro/accel, and the quaternion's scale is sidestepped entirely by normalizing it
-  before use (valid for a rotation regardless of the true scale factor). The red/green
-  arrows are length-scaled and clamped purely to stay legible next to the blue one
-  (`_ARROW_VECTOR_GAIN`/`_ARROW_VECTOR_MAX_LENGTH` in `sim_viewer_client.py`) — that is
-  **not** a physical units claim.
-- **Mounting is assumed identity** — this onboard IMU's rotation relative to the trunk
-  is unknown (`constants.IMU_MOUNT_QUAT` is for the *separate* I2C BMI088
-  `imu_reader.py` reads, not necessarily this one). If the blue arrow doesn't point up
-  when the robot is genuinely upright, that's this assumption, not a bug.
-- Only directions carry real information; don't wire this into anything that assumes
-  calibrated units or a known mounting without fixing the above first.
+Caveats, in `hw_state_stream.py`'s `_imu_from_telemetry()`:
+- **Gyro units are raw STM32 register values, not SI** — `~/zubr.py` documents no LSB
+  scale for it. Its arrow is length-scaled and clamped purely to stay legible next to
+  the (always unit-length) gravity arrow (`_ARROW_GYRO_GAIN`/`_ARROW_GYRO_MAX_LENGTH`
+  in `sim_viewer_client.py`) — not a physical units claim.
+- **Quaternion scale** is sidestepped by normalizing it before use — valid for a
+  rotation regardless of the true LSB scale factor.
+- **Mounting** (`constants.ZUBR_IMU_MOUNT_QUAT`) is an unverified identity
+  placeholder — this BHI260's rotation relative to the trunk is unknown (distinct from
+  `IMU_MOUNT_QUAT`, the *separate* I2C BMI088's own mounting, already reverified). If
+  the gravity arrow doesn't point straight down when the robot is genuinely level,
+  this is the first thing to check.
+- Don't wire the gyro channel into anything that assumes calibrated units without
+  fixing the above first; the gravity channel's direction is already meaningful (same
+  caveats as the real RL pipeline's own `projected_gravity` has for the BMI088).
 
 ### Wire format addition
 
-[`state_stream.py`](../../src/sim/state_stream.py)'s `_IMU_TRAILER`: 10 float64s —
-gyro `(x, y, z)`, accel `(x, y, z)`, quat `(w, x, y, z)` — appended after qpos/qvel.
-Presence is inferred from packet length, not a header flag, so `sim_main.py`'s
-IMU-less packets are untouched; `StateReceiver.last_imu` is `None` whenever the most
-recently applied packet didn't carry one (which is also how the viewer knows to clear
-stale arrows if a physics master takes over the port).
+[`state_stream.py`](../../src/sim/state_stream.py)'s `_IMU_TRAILER`: 6 float64s —
+gyro `(x, y, z)`, projected gravity `(x, y, z)` — appended after qpos/qvel. Presence is
+inferred from packet length, not a header flag, so `sim_main.py`'s IMU-less packets
+are untouched; `StateReceiver.last_imu` is `None` whenever the most recently applied
+packet didn't carry one (which is also how the viewer knows to clear stale arrows if a
+physics master takes over the port).

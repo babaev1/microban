@@ -177,6 +177,12 @@ IMU_I2C_BUS: int = 1
 # without re-deriving SPAWN_TRUNK_QUAT the same way mujoco_controller.py does.
 IMU_MOUNT_QUAT: tuple[float, float, float, float] = (0.5, -0.5, -0.5, 0.5)
 
+# Same idea as IMU_MOUNT_QUAT above, but for the STM32/zubr board's onboard BHI260
+# (read via zubr_link.py / hw_state_stream.py) — a physically different IMU with its
+# own mounting relative to the trunk, not necessarily anything like IMU_MOUNT_QUAT's
+# value. TODO(calibrate on the real board): unverified, identity placeholder.
+ZUBR_IMU_MOUNT_QUAT: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0)
+
 # NOTE: the walk RL policy's DoF ordering used to be hardcoded here as
 # OBSERVATION_DOF_ORDER, but it didn't match the order the policy was actually
 # trained on (its ONNX metadata's joint_names) — that mismatch misapplied

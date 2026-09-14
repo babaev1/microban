@@ -30,13 +30,18 @@ class IMUSnapshot:
 
 def imu_quat_to_body(
     q: tuple[float, float, float, float],
+    mount_quat: tuple[float, float, float, float] = IMU_MOUNT_QUAT,
 ) -> tuple[float, float, float, float]:
-    """Convert a quaternion measured in IMU frame to the trunk (body) frame.
+    """Convert a quaternion measured in an IMU's own frame to the trunk (body) frame.
 
-    Applies q_body = q_imu * conjugate(IMU_MOUNT_QUAT).
+    Applies q_body = q_imu * conjugate(mount_quat). ``mount_quat`` defaults to
+    IMU_MOUNT_QUAT (the BMI088 this module drives) but takes any IMU's own mounting
+    rotation — e.g. hw_state_stream.py passes ZUBR_IMU_MOUNT_QUAT for the STM32
+    board's BHI260, a physically different sensor with its own (currently unverified)
+    mounting, sharing only this math.
     """
     w1, x1, y1, z1 = q
-    w2, x2, y2, z2 = IMU_MOUNT_QUAT[0], -IMU_MOUNT_QUAT[1], -IMU_MOUNT_QUAT[2], -IMU_MOUNT_QUAT[3]
+    w2, x2, y2, z2 = mount_quat[0], -mount_quat[1], -mount_quat[2], -mount_quat[3]
     return (
         w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
         w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,

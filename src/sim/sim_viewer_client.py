@@ -9,20 +9,22 @@ from a headless `sim_main.py --stream-to ...` master (e.g. the Orange Pi). See
 docs/dev/sim_stream.md for the full picture.
 
 When the master is `hw_state_stream.py` (real robot, not a physics step) instead, its
-packets also carry a raw IMU reading (see state_stream.py's `_IMU_TRAILER`) — rendered
-here as three arrows rooted at a point 10cm above the "imu" site (the best stand-in
-for "the robot's head" this model currently has — its actual head body/joint is
-commented out of robot.xml), all in world frame:
-  - blue:  the IMU's own reported "up" (unit length) — visualizes orientation directly.
-  - red:   the raw accelerometer vector, rotated into world frame by that same
-           orientation — should point straight down (aligned with the blue arrow's
-           opposite, i.e. gravity) when the robot is still and the fusion is healthy;
-           divergence between them is a visible sanity signal, not just decoration.
-  - green: the raw gyro vector (rotation axis), likewise rotated into world frame —
-           near-zero length at rest, longer while turning.
-See docs/dev/hw_stream.md — magnitudes are uncalibrated raw sensor units (scaled and
-clamped purely for a legible arrow, not physical units), and orientation is taken
-as-is with no mounting correction; only directions carry real information.
+packets also carry an IMU observation (see state_stream.py's `_IMU_TRAILER`) —
+exactly the two channels moves/walk.py's RL policy observes, gyro and gravity
+projected into body frame, already computed sender-side the same way observer.py
+computes them for the real BMI088. Rendered here as two arrows rooted at a point
+above the "imu" site (the best stand-in for "the robot's head" this model currently
+has — its actual head body/joint is commented out of robot.xml). Both vectors are
+body-frame, drawn without further rotation: the trunk free joint has no real
+orientation source in hw_state_stream.py and is always rendered upright (identity),
+so body frame and this render's frame coincide — a real-robot lean shows up as these
+arrows tilting away from straight-down/zero, even though the mesh itself stays put.
+  - red:   projected gravity (unit vector) — points straight down when the robot is
+           level; leans with the robot's real tilt otherwise.
+  - green: gyro (rotation axis) — near-zero length at rest, longer while turning.
+See docs/dev/hw_stream.md — gyro is uncalibrated raw sensor units (scaled and clamped
+purely for a legible arrow, not physical units) and both assume the BHI260's mounting
+relative to the trunk is identity (ZUBR_IMU_MOUNT_QUAT, unverified placeholder).
 
 Usage:
     uv run --group sim src/sim/sim_viewer_client.py --listen 0.0.0.0:9761
@@ -42,25 +44,16 @@ from sim.state_stream import DEFAULT_STREAM_PORT, StateReceiver, parse_host_port
 # straight up regardless of the robot's own tilt).
 _ARROW_ANCHOR_HEIGHT = 0.20
 
-_ARROW_ORIENTATION_RGBA = np.array([0.2, 0.4, 1.0, 1.0], dtype=np.float32)
-_ARROW_ACCEL_RGBA = np.array([1.0, 0.2, 0.2, 1.0], dtype=np.float32)
+_ARROW_GRAVITY_RGBA = np.array([1.0, 0.2, 0.2, 1.0], dtype=np.float32)
 _ARROW_GYRO_RGBA = np.array([0.2, 0.9, 0.2, 1.0], dtype=np.float32)
 _ARROW_SHAFT_WIDTH = 0.004
-_ARROW_ORIENTATION_LENGTH = 0.08  # fixed — it's a pure direction, magnitude is meaningless
-# Raw-unit-to-meters scale and a length cap for the accel/gyro arrows: their true LSB
-# scale isn't known (see hw_state_stream.py's _imu_from_telemetry), so this is tuned
-# only to keep the arrows legible next to the orientation arrow above, not to represent
-# real physical units (e.g. "1 arrow-meter = 1 g" is not a claim this makes).
-_ARROW_VECTOR_GAIN = 1.0 / 4096.0
-_ARROW_VECTOR_MAX_LENGTH = 0.12
-
-
-def _quat_rotate(quat_wxyz: tuple[float, float, float, float], v: np.ndarray) -> np.ndarray:
-    """Rotate world/body vector ``v`` by unit quaternion ``quat_wxyz`` (w, x, y, z)."""
-    w, x, y, z = quat_wxyz
-    qv = np.array([x, y, z])
-    t = 2.0 * np.cross(qv, v)
-    return v + w * t + np.cross(qv, t)
+_ARROW_GRAVITY_LENGTH = 0.08  # fixed — projected_gravity is always unit length by construction
+# Raw-unit-to-meters scale and a length cap for the gyro arrow: its true LSB scale
+# isn't known (see hw_state_stream.py's _imu_from_telemetry), so this is tuned only to
+# keep it legible next to the gravity arrow above, not to represent real physical
+# units (e.g. "1 arrow-meter = 1 rad/s" is not a claim this makes).
+_ARROW_GYRO_GAIN = 1.0 / 4096.0
+_ARROW_GYRO_MAX_LENGTH = 0.12
 
 
 def _set_arrow(scn, origin: np.ndarray, vec: np.ndarray, rgba: np.ndarray, width: float) -> None:
@@ -71,30 +64,25 @@ def _set_arrow(scn, origin: np.ndarray, vec: np.ndarray, rgba: np.ndarray, width
 
 
 def _draw_imu_arrows(scn, anchor: np.ndarray, imu: tuple) -> None:
-    """Populate ``scn`` (a viewer's ``user_scn``) with the three IMU arrows at ``anchor``.
+    """Populate ``scn`` (a viewer's ``user_scn``) with the gravity/gyro arrows at ``anchor``.
 
-    Quaternion is normalized here (not assumed unit-length): the raw reading's true
-    LSB scale is unknown (see hw_state_stream.py), but normalizing sidesteps that
-    entirely for anything used purely as a rotation, which every use here is.
+    ``imu`` is ``(gyro, projected_gravity)`` — already body-frame, already the exact
+    RL-observation values (see hw_state_stream.py's _imu_from_telemetry). No rotation
+    happens here; see the module docstring for why that's still frame-consistent.
     """
     scn.ngeom = 0
-    gyro_raw, accel_raw, quat_raw = imu
-    quat = np.array(quat_raw, dtype=np.float64)
-    norm = np.linalg.norm(quat)
-    quat = (1.0, 0.0, 0.0, 0.0) if norm < 1e-9 else tuple(quat / norm)
+    gyro, projected_gravity = imu
 
-    up_world = _quat_rotate(quat, np.array([0.0, 0.0, 1.0]))
-    _set_arrow(scn, anchor, up_world * _ARROW_ORIENTATION_LENGTH, _ARROW_ORIENTATION_RGBA, _ARROW_SHAFT_WIDTH)
+    gravity = np.array(projected_gravity, dtype=np.float64)
+    gravity_norm = np.linalg.norm(gravity)
+    if gravity_norm > 1e-9:
+        _set_arrow(scn, anchor, gravity / gravity_norm * _ARROW_GRAVITY_LENGTH, _ARROW_GRAVITY_RGBA, _ARROW_SHAFT_WIDTH)
 
-    accel_world = _quat_rotate(quat, np.array(accel_raw, dtype=np.float64))
-    accel_len = min(np.linalg.norm(accel_world) * _ARROW_VECTOR_GAIN, _ARROW_VECTOR_MAX_LENGTH)
-    if np.linalg.norm(accel_world) > 1e-9:
-        _set_arrow(scn, anchor, accel_world / np.linalg.norm(accel_world) * accel_len, _ARROW_ACCEL_RGBA, _ARROW_SHAFT_WIDTH)
-
-    gyro_world = _quat_rotate(quat, np.array(gyro_raw, dtype=np.float64))
-    gyro_len = min(np.linalg.norm(gyro_world) * _ARROW_VECTOR_GAIN, _ARROW_VECTOR_MAX_LENGTH)
-    if np.linalg.norm(gyro_world) > 1e-9:
-        _set_arrow(scn, anchor, gyro_world / np.linalg.norm(gyro_world) * gyro_len, _ARROW_GYRO_RGBA, _ARROW_SHAFT_WIDTH)
+    gyro_vec = np.array(gyro, dtype=np.float64)
+    gyro_norm = np.linalg.norm(gyro_vec)
+    if gyro_norm > 1e-9:
+        gyro_len = min(gyro_norm * _ARROW_GYRO_GAIN, _ARROW_GYRO_MAX_LENGTH)
+        _set_arrow(scn, anchor, gyro_vec / gyro_norm * gyro_len, _ARROW_GYRO_RGBA, _ARROW_SHAFT_WIDTH)
 
 
 def main() -> None:
