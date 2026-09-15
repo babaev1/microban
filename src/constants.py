@@ -180,8 +180,25 @@ IMU_MOUNT_QUAT: tuple[float, float, float, float] = (0.5, -0.5, -0.5, 0.5)
 # Same idea as IMU_MOUNT_QUAT above, but for the STM32/zubr board's onboard BHI260
 # (read via zubr_link.py / hw_state_stream.py) — a physically different IMU with its
 # own mounting relative to the trunk, not necessarily anything like IMU_MOUNT_QUAT's
-# value. TODO(calibrate on the real board): unverified, identity placeholder.
-ZUBR_IMU_MOUNT_QUAT: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0)
+# value.
+#
+# Calibrated in two passes:
+# 1. `--calibrate-mount N` captured (0.6936, -0.69805, -0.1265, 0.1249) while the
+#    robot stood level, at some arbitrary (uncontrolled) heading. That got "down"
+#    right at rest, but a level-only capture can't fix yaw — a gravity/accelerometer
+#    reading is mathematically blind to rotation about the vertical axis (rotating a
+#    vector about the axis it's already aligned with is the identity) — so it silently
+#    baked in whatever heading the robot happened to face during capture, which then
+#    showed up as tilt *direction* being wrong (confirmed live: forward tilt showed as
+#    a rightward lean, a rightward tilt showed as a backward lean — both explained
+#    exactly by a single fixed +90 deg yaw error, verified against both reports).
+# 2. That +90 deg yaw (about Z, quaternion (cos45, 0, 0, sin45)) was left-multiplied
+#    onto pass 1's result to correct it — see the git history for the derivation.
+# Re-verify by tilting the robot forward/back/left/right and checking the red arrow
+# in sim_viewer_client.py leans the same way the robot actually tilted.
+ZUBR_IMU_MOUNT_QUAT: tuple[float, float, float, float] = (
+    0.40214026804532405, -0.404155565678398, -0.5830574257372462, 0.5787793377793172,
+)
 
 # NOTE: the walk RL policy's DoF ordering used to be hardcoded here as
 # OBSERVATION_DOF_ORDER, but it didn't match the order the policy was actually

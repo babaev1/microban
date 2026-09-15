@@ -4,6 +4,7 @@ HOST ?= microban
 ID ?=
 SLAVE ?=
 PORT ?= 9761
+JOYSTICK ?=
 
 sync:
 	rsync -avz \
@@ -32,8 +33,10 @@ viewer:
 # Master/slave display split (see docs/dev/sim_stream.md): physics headless on this
 # machine (e.g. the Pi), broadcast to `make sim-viewer` running on SLAVE (e.g. your
 # laptop, over its own real GPU) instead of opening a local viewer window.
+# JOYSTICK=1 drives vx/vy/vtheta from the STM32/zubr board's own remote-control
+# joysticks instead of typed keyboard velocity steps — see docs/dev/hw_stream.md.
 sim-master:
-	PYTHONPATH=src:vendor/bam uv run --group sim src/sim/sim_main.py --hz 50 --stream-to $(SLAVE)
+	PYTHONPATH=src:vendor/bam uv run --group sim src/sim/sim_main.py --hz 50 --stream-to $(SLAVE) $(if $(JOYSTICK),--joystick,)
 
 # Real 3D display-only viewer for a remote sim-master. PORT must match the one
 # sim-master's SLAVE address uses (default 9761).

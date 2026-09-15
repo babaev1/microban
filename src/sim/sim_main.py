@@ -12,12 +12,19 @@ headless and broadcast physics state to a remote `sim_viewer_client.py` instead 
 opening a local viewer window — e.g. physics on the Orange Pi, real 3D rendering on
 your laptop's own GPU:
     uv run --group sim src/sim/sim_main.py --hz 50 --stream-to 192.168.1.42:9761
+
+Add --joystick to drive vx/vy/vtheta from the STM32/zubr board's own remote-control
+joysticks instead of typed keyboard velocity steps — see
+input/zubr_joystick_input.py and docs/dev/hw_stream.md:
+    uv run --group sim src/sim/sim_main.py --hz 50 --stream-to 192.168.1.42:9761 --joystick
+    make sim-master SLAVE=192.168.1.42:9761 JOYSTICK=1
 """
 
 import argparse
 
 from scheduler import Scheduler
 from input.keyboard_input import KeyboardInputSource
+from input.zubr_joystick_input import ZubrJoystickInputSource
 from sim.mujoco_input import MuJoCoInputSource
 from sim.mujoco_controller import MuJoCoController
 from sim.state_stream import DEFAULT_STREAM_PORT, StateSender, parse_host_port
@@ -53,12 +60,32 @@ def main() -> None:
             "window left to bind it to."
         ),
     )
+    parser.add_argument(
+        "--joystick",
+        action="store_true",
+        help=(
+            "Drive vx/vy/vtheta from the STM32/zubr board's remote-control joysticks "
+            "(over /dev/ttyS2) instead of typed keyboard velocity steps. Move "
+            "toggling/reset/torque-display/stop still come from the keyboard, same "
+            "terminal as --stream-to uses; 'walk' is force-enabled regardless, since "
+            "there's no known remote button to toggle it with instead. See "
+            "input/zubr_joystick_input.py and docs/dev/hw_stream.md."
+        ),
+    )
     args = parser.parse_args()
 
     state_sender = None
     if args.stream_to:
         host, port = parse_host_port(args.stream_to, DEFAULT_STREAM_PORT)
         state_sender = StateSender(host, port)
+
+    if args.joystick:
+        # No viewer window either way once this is in play — see the module
+        # docstring; only meaningful alongside --stream-to in practice, but nothing
+        # here actually requires it.
+        input_source = ZubrJoystickInputSource(move_keys=MOVE_KEYS)
+        key_callback = None
+    elif args.stream_to:
         # No viewer window in this mode, so keyboard input comes from the terminal
         # (raw stdin) rather than from a GLFW/Tk key callback.
         input_source = KeyboardInputSource(move_keys=MOVE_KEYS)

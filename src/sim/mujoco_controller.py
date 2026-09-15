@@ -16,6 +16,7 @@ import mujoco.viewer
 
 if TYPE_CHECKING:
     from input.keyboard_input import KeyboardInputSource
+    from input.zubr_joystick_input import ZubrJoystickInputSource
     from sim.mujoco_input import MuJoCoInputSource
     from sim.state_stream import StateSender
 
@@ -320,7 +321,7 @@ class MuJoCoController:
         mjcf_path: str,
         key_callback: Callable[[int, int, int, int], None] | None = None,
         stop_flag_path: str = "/tmp/microban_scheduler.stop",
-        reset_source: "MuJoCoInputSource | KeyboardInputSource | None" = None,
+        reset_source: "MuJoCoInputSource | KeyboardInputSource | ZubrJoystickInputSource | None" = None,
         # Master/slave display split (see sim.state_stream, docs/dev/sim_stream.md):
         # when set, no local viewer is opened at all — this instance runs headless
         # and broadcasts (qpos, qvel) to a remote slave viewer after every tick

@@ -62,6 +62,10 @@ into the SSH session running `sim_main.py` instead of clicked into a viewer wind
 moves, arrow-key velocity, `[i]` IMU display, `[t]` torque display, `[r]` reset, `[q]`
 quit.
 
+Pass `--joystick` (`JOYSTICK=1` for `make sim-master`) to drive velocity from the
+STM32/zubr board's own remote-control joysticks instead — see
+[sim_joystick_control.md](sim_joystick_control.md).
+
 ## Wire format
 
 [`sim/state_stream.py`](../../src/sim/state_stream.py) — plain UDP, "latest wins," never

@@ -25,6 +25,14 @@ sim = [
     # lives in this group rather than the base dependencies because that script is
     # meaningless without mujoco too — both come in together via `--group sim`.
     "pyserial>=3.5",
+    # Not imported by anything in this project directly — vendor/bam/bam/message.py
+    # (reached from mujoco_controller.py's `from bam.model import load_model`) imports
+    # it unconditionally for terminal color output. vendor/bam is deliberately NOT a
+    # uv dependency itself (see the note above), so nothing otherwise declares this;
+    # it used to be pulled in only by accident, as a transitive dependency of the
+    # since-removed `better-actuator-models` package, which silently broke `make
+    # sim`/`sim-master` the moment that accidental path stopped resolving it.
+    "colorama",
 ]
 
 [tool.uv]
