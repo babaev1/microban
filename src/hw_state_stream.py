@@ -30,43 +30,17 @@ On the laptop first:
 """
 
 import argparse
+import math
 import time
 
 import mujoco
 import numpy as np
 
-from constants import MOTOR_SIGN, MOTOR_TO_ID, ZUBR_IMU_MOUNT_QUAT
+from constants import MOTOR_SIGN, MOTOR_TO_ID, MOTOR_ZERO_TICKS, ZUBR_IMU_MOUNT_QUAT
 from imu_reader import imu_quat_to_body, quat_apply_inverse
 from sim.state_stream import DEFAULT_STREAM_PORT, StateSender, parse_host_port
-from zubr_link import DEFAULT_BAUDRATE, DEFAULT_PORT, MOTOR_COUNT, ZubrLink, ticks_to_rad
-
-# STM32 slot order (which of the 16 telemetry/command array slots is which joint) is
-# read from MOTOR_TO_ID's values directly (constants.py) — RobotController's rustypot
-# bus is dead code on this robot now, so those numbers are free to mean "STM32 slot
-# index" instead of a Dynamixel bus ID. This is calibrated by moving one joint by hand
-# and editing MOTOR_TO_ID[name] to whichever slot's telemetry position changed — that
-# one dict is now the single place to edit, nothing in this file needs touching.
-#
-# Calibration is expected to be incremental: build_slot_map() below tolerates joints
-# whose MOTOR_TO_ID value isn't a valid, unique slot yet (prints a warning and leaves
-# that joint out of the stream — its qpos just stays 0 — rather than refusing to run).
-def build_slot_map(motor_to_id: dict[str, int]) -> dict[int, str]:
-    slot_to_joint: dict[int, str] = {}
-    claimed_by: dict[int, str] = {}
-    for name, slot in motor_to_id.items():
-        if not (0 <= slot < MOTOR_COUNT):
-            print(f"hw_state_stream: {name!r} has MOTOR_TO_ID value {slot} — out of STM32 slot range [0, {MOTOR_COUNT}); not streamed until recalibrated.", flush=True)
-            continue
-        if slot in claimed_by:
-            print(f"hw_state_stream: {name!r} and {claimed_by[slot]!r} both claim slot {slot} in MOTOR_TO_ID — neither is streamed until this is resolved.", flush=True)
-            slot_to_joint.pop(slot, None)
-            continue
-        claimed_by[slot] = name
-        slot_to_joint[slot] = name
-    missing = MOTOR_COUNT - len(slot_to_joint)
-    if missing:
-        print(f"hw_state_stream: {missing} of {MOTOR_COUNT} STM32 slots have no (valid, unique) joint in MOTOR_TO_ID yet — those joints will stay at 0 in the viewer.", flush=True)
-    return slot_to_joint
+from zubr_link import DEFAULT_BAUDRATE, DEFAULT_PORT, ZubrLink, ticks_to_rad
+from zubr_motor_map import build_slot_map
 
 # Spawn pose of the trunk free joint — matches sim/mujoco_controller.py's
 # SPAWN_TRUNK_Z/SPAWN_TRUNK_QUAT for NEUTRAL_POSE's current all-zero angles (identity
@@ -248,12 +222,132 @@ def calibrate_mount(link: ZubrLink, n_samples: int) -> None:
     print(f"ZUBR_IMU_MOUNT_QUAT: tuple[float, float, float, float] = ({w!r}, {x!r}, {y!r}, {z!r})", flush=True)
 
 
+def calibrate_zero(link: ZubrLink, n_samples: int) -> None:
+    """Capture MOTOR_ZERO_TICKS from the real board — the robot must be held/standing
+    in its true NEUTRAL_POSE (all joint angles as defined in constants.py, currently
+    all 0) while this runs. Averages n_samples raw ticks per resolved slot and prints
+    a dict literal to paste into constants.py, then returns."""
+    slot_to_joint = build_slot_map(MOTOR_TO_ID)
+    print(
+        f"Hold the robot in its true NEUTRAL_POSE (standing, all joints at their "
+        f"designed zero) and keep it still. Capturing {n_samples} samples...",
+        flush=True,
+    )
+    sums = {slot: 0 for slot in slot_to_joint}
+    got = 0
+    dropped = 0
+    while got < n_samples:
+        telemetry = link.poll()
+        if telemetry is None:
+            dropped += 1
+            continue
+        for slot in slot_to_joint:
+            sums[slot] += telemetry.motor_positions[slot]
+        got += 1
+    if dropped:
+        print(f"({dropped} dropped/corrupt frames along the way.)", flush=True)
+
+    print("Paste this into constants.py, replacing the current MOTOR_ZERO_TICKS line:", flush=True)
+    print("MOTOR_ZERO_TICKS: dict[str, int] = {", flush=True)
+    for slot in sorted(slot_to_joint):
+        name = slot_to_joint[slot]
+        print(f"    {name!r}: {round(sums[slot] / n_samples)},", flush=True)
+    print("}", flush=True)
+
+
+def calibrate_gyro_scale(link: ZubrLink, duration_s: float) -> None:
+    """Derive a raw-gyro-count -> rad/s scale factor from a timed physical rotation.
+
+    Protocol: you rotate the robot's trunk continuously about ONE axis, as steadily
+    as you can, for exactly `duration_s` seconds (the script times this itself —
+    accurate elapsed time is what actually matters, not how precisely you hit the
+    duration), then report the total rotation you completed in degrees. The scale
+    factor is derived only from whichever axis shows the largest average raw
+    reading (the one you actually rotated about) and assumed to apply equally to
+    all three — standard for MEMS gyro chips, which use one shared full-scale-range
+    setting, not a separately-tuned sensitivity per axis.
+
+    This is a single, rough measurement — repeat it a few times (ideally at
+    different speeds) and compare/average before trusting the result.
+    """
+    input(
+        f"Get ready to rotate the robot's trunk continuously about ONE axis (e.g. spin "
+        f"it around its vertical/yaw axis) as steadily as you can, for about "
+        f"{duration_s:.0f}s. Press Enter to start the capture, then begin rotating "
+        f"immediately... "
+    )
+
+    samples: list[tuple[float, float, float]] = []
+    dropped = 0
+    start = time.perf_counter()
+    while time.perf_counter() - start < duration_s:
+        telemetry = link.poll()
+        if telemetry is None:
+            dropped += 1
+            continue
+        samples.append(tuple(float(v) for v in telemetry.gyro_raw))
+    elapsed = time.perf_counter() - start
+
+    if not samples:
+        print("No samples captured — check the link and try again.", flush=True)
+        return
+    if dropped:
+        print(f"({dropped} dropped/corrupt frames along the way.)", flush=True)
+
+    avg = [sum(s[i] for s in samples) / len(samples) for i in range(3)]
+    dominant_axis = max(range(3), key=lambda i: abs(avg[i]))
+    axis_name = ("x", "y", "z")[dominant_axis]
+    print(f"Captured {len(samples)} samples over {elapsed:.2f}s.", flush=True)
+    print(
+        f"Average raw gyro: x={avg[0]:+.2f} y={avg[1]:+.2f} z={avg[2]:+.2f} "
+        f"(dominant axis: {axis_name}, avg={avg[dominant_axis]:+.2f})",
+        flush=True,
+    )
+
+    answer = input(
+        "How much total rotation did you complete during that capture, in degrees? "
+        "(e.g. '360' for one full turn, '1080' for three turns): "
+    )
+    try:
+        total_degrees = float(answer)
+    except ValueError:
+        print("Not a number — aborting without computing a scale.", flush=True)
+        return
+
+    if abs(avg[dominant_axis]) < 1e-6:
+        print(
+            "Dominant-axis average is ~0 — this capture doesn't look like it caught "
+            "real rotation. Try again with a faster/cleaner spin.",
+            flush=True,
+        )
+        return
+
+    true_omega = math.radians(total_degrees) / elapsed
+    scale = abs(true_omega / avg[dominant_axis])
+
+    print(
+        f"\nEstimated scale: {scale:.6e} rad/s per raw count (on the {axis_name} axis, "
+        f"assumed the same for all three axes).",
+        flush=True,
+    )
+    print(
+        "Paste this into constants.py, replacing the current ZUBR_GYRO_SCALE line:",
+        flush=True,
+    )
+    print(f"ZUBR_GYRO_SCALE: float = {scale!r}", flush=True)
+    print(
+        "This is a single rough measurement — repeat a few times (ideally at "
+        "different rotation speeds) and compare before trusting it for a real walk.",
+        flush=True,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
         "--stream-to",
         metavar="HOST[:PORT]",
-        help=f"sim_viewer_client.py address to stream to (default port {DEFAULT_STREAM_PORT}). Required unless --calibrate-mount is given.",
+        help=f"sim_viewer_client.py address to stream to (default port {DEFAULT_STREAM_PORT}). Required unless --calibrate-mount/--calibrate-zero is given.",
     )
     parser.add_argument(
         "--calibrate-mount",
@@ -263,6 +357,28 @@ def main() -> None:
             "Instead of streaming: capture N onboard-IMU quaternion samples while the "
             "robot stands level and still, print the resulting ZUBR_IMU_MOUNT_QUAT to "
             "paste into constants.py, then exit. See docs/dev/hw_stream.md."
+        ),
+    )
+    parser.add_argument(
+        "--calibrate-zero",
+        type=int,
+        metavar="N",
+        help=(
+            "Instead of streaming: capture N raw-position samples per joint while the "
+            "robot is held in its true NEUTRAL_POSE, print the resulting "
+            "MOTOR_ZERO_TICKS to paste into constants.py, then exit. See "
+            "docs/dev/hw_stream.md."
+        ),
+    )
+    parser.add_argument(
+        "--calibrate-gyro-scale",
+        type=float,
+        metavar="SECONDS",
+        help=(
+            "Instead of streaming: capture raw gyro for SECONDS while you physically "
+            "rotate the robot's trunk, then prompt for the total rotation you "
+            "completed (in degrees) and print the resulting ZUBR_GYRO_SCALE to paste "
+            "into constants.py, then exit. See docs/dev/zubr_real_hardware.md."
         ),
     )
     parser.add_argument("--port", default=DEFAULT_PORT, metavar="DEV", help="STM32 serial port (default: %(default)s)")
@@ -283,8 +399,22 @@ def main() -> None:
         finally:
             link.close()
         return
+    if args.calibrate_zero is not None:
+        link = ZubrLink(args.port, baudrate=args.baudrate)
+        try:
+            calibrate_zero(link, args.calibrate_zero)
+        finally:
+            link.close()
+        return
+    if args.calibrate_gyro_scale is not None:
+        link = ZubrLink(args.port, baudrate=args.baudrate)
+        try:
+            calibrate_gyro_scale(link, args.calibrate_gyro_scale)
+        finally:
+            link.close()
+        return
     if args.stream_to is None:
-        parser.error("--stream-to is required unless --calibrate-mount is given")
+        parser.error("--stream-to is required unless --calibrate-mount/--calibrate-zero is given")
 
     model = mujoco.MjModel.from_xml_path(args.mjcf_path)
     data = mujoco.MjData(model)
@@ -323,7 +453,8 @@ def main() -> None:
                     # applies it the same way for the rustypot/Dynamixel bus) — reused
                     # here as the best available guess, not yet reverified against this
                     # STM32/zubr board specifically.
-                    angle = MOTOR_SIGN[name] * ticks_to_rad(telemetry.motor_positions[slot])
+                    zero = MOTOR_ZERO_TICKS.get(name, 0)
+                    angle = MOTOR_SIGN[name] * ticks_to_rad(telemetry.motor_positions[slot] - zero)
                     data.qpos[joint_qpos_idx[name]] = angle
                 mujoco.mj_forward(model, data)
                 sender.send(model, data, imu=_imu_from_telemetry(telemetry))

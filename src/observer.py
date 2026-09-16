@@ -78,8 +78,10 @@ class Observer:
             state.gyro = list(self.controller.read_gyro())
             state.quat = list(self.controller.read_quat(dt))
 
-            # Project gravity vector into body frame
-            state.body_quat = list(imu_quat_to_body(state.quat))
+            # Project gravity vector into body frame, using whichever controller is
+            # actually in use's own IMU mounting constant (see ControllerProtocol.mount_quat) —
+            # NOT always the BMI088's IMU_MOUNT_QUAT, which imu_quat_to_body() would default to.
+            state.body_quat = list(imu_quat_to_body(state.quat, mount_quat=self.controller.mount_quat))
             state.projected_gravity = list(quat_apply_inverse(state.body_quat, [0.0, 0.0, -1.0]))
 
         except Exception as exc:

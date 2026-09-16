@@ -5,7 +5,17 @@ from typing import Protocol
 
 
 class ControllerProtocol(Protocol):
-    """Structural interface shared by RobotController, FakeController, and MuJoCoController."""
+    """Structural interface shared by RobotController, ZubrRobotController, and MuJoCoController."""
+
+    # The IMU's mounting rotation relative to the trunk (see imu_reader.imu_quat_to_body) —
+    # each controller's own physical/simulated IMU needs its own constant here (RobotController:
+    # constants.IMU_MOUNT_QUAT for the real BMI088; ZubrRobotController:
+    # constants.ZUBR_IMU_MOUNT_QUAT for the STM32 board's BHI260; MuJoCoController:
+    # IMU_MOUNT_QUAT too, since the mjcf's "imu" site is built to need the same correction
+    # a real BMI088 would). Observer.read_state() and Scheduler's IMU debug print both read
+    # this rather than assuming one hardcoded constant, so read_quat()'s raw return value is
+    # always converted with the *correct* mount for whichever controller is actually in use.
+    mount_quat: tuple[float, float, float, float]
 
     def sync_write_torque_enable(self, ids: list[int], values: list[bool]) -> None: ...
 
