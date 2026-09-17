@@ -4,12 +4,14 @@
 from rustypot import Xl330PyController
 import numpy as np
 
-from constants import MOTOR_TO_ID, MOTOR_SIGN, IMU_I2C_BUS, PRESENT_CURRENT_UNIT_A
+from constants import MOTOR_TO_ID, MOTOR_SIGN, IMU_I2C_BUS, IMU_MOUNT_QUAT, PRESENT_CURRENT_UNIT_A
 from imu_reader import ThreadedIMUReader
 
 
 class RobotController:
     """Wraps Xl330PyController."""
+
+    mount_quat = IMU_MOUNT_QUAT
 
     def __init__(self, serial_port: str = "/dev/ttyAMA0", baudrate: int = 1_000_000, timeout: float = 0.1) -> None:
         self._controller = Xl330PyController(serial_port=serial_port, baudrate=baudrate, timeout=timeout)

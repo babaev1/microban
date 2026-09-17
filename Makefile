@@ -1,4 +1,4 @@
-.PHONY: sync setup run stop shutdown voltage imu sim viewer sim-master sim-viewer hw-stream gamepad-headless-enable gamepad-headless-disable
+.PHONY: sync setup run stop shutdown voltage imu zubr-imu sim viewer sim-master sim-viewer hw-stream gamepad-headless-enable gamepad-headless-disable
 
 HOST ?= microban
 ID ?=
@@ -56,11 +56,20 @@ run: sync
 stop:
 	ssh -tt $(HOST) "bash -l -c 'cd microban && PYTHONPATH=src .venv/bin/python src/stop.py'"
 
+# NOTE: targets the old rustypot/XL330 bus (/dev/ttyAMA0), now dead hardware on this
+# robot — see docs/dev/hw_stream.md's "voltage" section. Left as-is pending hardware
+# documentation for whether the STM32/zubr board exposes voltage at all.
 voltage: sync
 	ssh $(HOST) "bash -l -c 'cd microban && PYTHONPATH=src .venv/bin/python src/voltage.py $(ID)'"
 
+# Separate I2C BMI088 (see docs/dev/hw_stream.md) — not the STM32/zubr board's onboard
+# BHI260; use `make zubr-imu` for that one.
 imu: sync
 	ssh -tt $(HOST) "bash -l -c 'cd microban && PYTHONPATH=src .venv/bin/python src/imu.py'"
+
+# STM32/zubr board's onboard BHI260, over /dev/ttyS2 — see docs/dev/hw_stream.md.
+zubr-imu: sync
+	ssh -tt $(HOST) "bash -l -c 'cd microban && PYTHONPATH=src .venv/bin/python src/zubr_imu.py'"
 
 shutdown:
 	ssh -tt $(HOST) "sudo shutdown -h now"

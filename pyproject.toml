@@ -10,6 +10,12 @@ dependencies = [
     "placo>=0.9.23",
     "pollen_bmi088_imu_library==1.0.0rc1",
     "rustypot>=1.4.2",
+    # zubr_link.py's serial link to the STM32 motor controller (/dev/ttyS2) — needed by
+    # src/main.py (via zubr_robot_controller.py) on the real robot, so it must be a base
+    # dependency: `make run` deploys with `uv sync --frozen` (no `--group sim`), which
+    # would otherwise leave it uninstalled and main.py would fail at import with
+    # "No module named 'serial'". See docs/dev/hw_stream.md.
+    "pyserial>=3.5",
 ]
 
 [dependency-groups]
@@ -20,11 +26,6 @@ sim = [
     # and docs/dev/sim_training_parity.md. `make sim`/`make sim-master` put it on
     # PYTHONPATH directly; it needs no install step.
     "mujoco>=3.8.1",
-    # Only used by src/hw_state_stream.py (real robot -> remote MuJoCo viewer, see
-    # docs/dev/hw_stream.md) to talk to the STM32 motor controller over /dev/ttyS2. It
-    # lives in this group rather than the base dependencies because that script is
-    # meaningless without mujoco too — both come in together via `--group sim`.
-    "pyserial>=3.5",
     # Not imported by anything in this project directly — vendor/bam/bam/message.py
     # (reached from mujoco_controller.py's `from bam.model import load_model`) imports
     # it unconditionally for terminal color output. vendor/bam is deliberately NOT a

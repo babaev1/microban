@@ -12,6 +12,10 @@ This never sends motor commands (every poll leaves all 16 motors relaxed — see
 `zubr_link.RELAX_POSITION`), so it's safe to run at any time, including while the
 robot is being moved by hand or driven by another process.
 
+Once the mapping/mounting here is verified, [zubr_real_hardware.md](zubr_real_hardware.md)
+covers the next step: `make run` actually commanding the real motors through this
+same board.
+
 ## Files
 
 - [`src/zubr_link.py`](../../src/zubr_link.py) — the serial link: struct layouts, CRC16,

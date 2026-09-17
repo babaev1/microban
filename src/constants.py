@@ -113,6 +113,41 @@ MOTOR_SIGN = {
     "head": 1.0,
 }
 
+# STM32/zubr board only: raw encoder ticks that correspond to each joint's true
+# mechanical zero (subtracted, in the raw-tick domain, before MOTOR_SIGN/ticks_to_rad
+# — see zubr_robot_controller.py's _present_position()). Everything before this was
+# calibrated assuming raw tick 0 == mechanical zero for every joint (an explicit,
+# documented simplification, see docs/dev/hw_stream.md's "Zero offset" section) —
+# confirmed WRONG for at least the four shoulder joints: a real run's diagnostic log
+# showed them reading ~2.4-2.8 rad (~140-160 deg) away from their true pose at rest,
+# consistent with an early raw-telemetry observation (slots 0-3, exactly the shoulder
+# joints in the current MOTOR_TO_ID, read 6693-7373 ticks ~ 2.8 rad while otherwise
+# stationary). Missing entries default to 0 (no correction) — same
+# incremental-calibration philosophy as MOTOR_TO_ID/ZUBR_IMU_MOUNT_QUAT: only what's
+# been measured is corrected, nothing is guessed.
+#
+# Calibrate with: PYTHONPATH=src uv run --group sim src/hw_state_stream.py --calibrate-zero N
+# (robot must be held/standing in its true NEUTRAL_POSE while it runs).
+MOTOR_ZERO_TICKS: dict[str, int] = {}
+
+# STM32/zubr board only: raw-gyro-count -> rad/s scale factor, applied uniformly to
+# all 3 axes in zubr_robot_controller.py's read_gyro() (after the frame correction —
+# scaling commutes with rotation, so order doesn't matter).
+#
+# raw / 16384 == degrees/second (firmware's documented gyro sensitivity), so the
+# rad/s-per-count factor is (1/16384) converted from degrees to radians. This
+# replaces an earlier undocumented 1.0 placeholder — a real run's diagnostic log
+# showed gyro swinging between roughly -6 and +5 raw counts while the robot was
+# completely motionless (dry-run guaranteed no real rotation); at this scale that's
+# +-6/16384 deg/s ~= +-6.4e-6 rad/s, i.e. negligible noise, as expected — confirming
+# the earlier instability really was from feeding raw, unscaled counts into the
+# policy (see docs/dev/zubr_real_hardware.md's incident log), not a hardware fault.
+#
+# `hw_state_stream.py --calibrate-gyro-scale SECONDS` (physically rotate the trunk
+# for a measured duration) remains available as an independent cross-check of this
+# documented value if it's ever in doubt.
+ZUBR_GYRO_SCALE: float = float(np.deg2rad(1.0 / 16384.0))
+
 # Position P Gain (Dynamixel register value)
 KP_DEFAULT: int = 7334       #400        # ~0.886 Nm/rad in MuJoCo
 # Reverted back to 125: it was raised to 1000 (and OVERCURRENT_CUTOFF_A to 60A alongside

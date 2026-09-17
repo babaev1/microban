@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 from bam.model import load_model as bam_load_model
 from bam.mujoco import MujocoController as BamController
 
-from constants import MOTOR_TO_ID, ID_TO_MOTOR, NEUTRAL_POSE, KP_DEFAULT, BAM_VIN, BAM_VOLTAGE_DROP_GAIN, BAM_VIN_MIN
+from constants import MOTOR_TO_ID, ID_TO_MOTOR, NEUTRAL_POSE, KP_DEFAULT, BAM_VIN, BAM_VOLTAGE_DROP_GAIN, BAM_VIN_MIN, IMU_MOUNT_QUAT
 
 
 def _can_create_gl_window() -> bool:
@@ -308,6 +308,12 @@ class _DelayBuffer:
 
 class MuJoCoController:
     """MuJoCo-backed controller."""
+
+    # The mjcf's "imu" site is built with its own local quat specifically to need the
+    # same correction a real BMI088 mounting would (see IMU_MOUNT_QUAT's docstring in
+    # constants.py) — read_quat()/read_gyro() below pull straight from that site's
+    # sensors, so this is the right constant for Observer/Scheduler to apply downstream.
+    mount_quat = IMU_MOUNT_QUAT
 
     # Roki4 servo groups, matching training's actuator split (roki_4_constants.py's
     # ROKI4_MOTOR_JOINT_EXPR_STEEL / _ALU): shoulders and knees are steel-geared

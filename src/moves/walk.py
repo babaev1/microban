@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 Marc Duclusaud
 
+import os
+
 import onnxruntime as ort
 import numpy as np
 
@@ -14,9 +16,11 @@ from moves.move import MotorCommand, Move, MoveState
 # Note: requires to set observe_voltage = True in the Observer to log voltages
 LOGGING = False
 
-# Set to True to print projected_gravity/gyro/lean a few times a second while walking is
-# active — useful for diagnosing balance loss (growing lean, fall) without a full LOGGING dump.
-DEBUG_PRINT = False
+# Set to True (or MICROBAN_WALK_DEBUG=1) to print projected_gravity/gyro/lean/velocity
+# a few times a second while walking is active — useful for diagnosing balance loss
+# (growing lean, fall) or a bad observation channel (e.g. an out-of-scale velocity
+# reading, see docs/dev/zubr_real_hardware.md) without a full LOGGING dump.
+DEBUG_PRINT = os.environ.get("MICROBAN_WALK_DEBUG", "0") == "1"
 DEBUG_PRINT_INTERVAL_S = 0.3
 
 # Policy name
@@ -189,9 +193,12 @@ class WalkMove(Move):
             pg = obs.robot_state.projected_gravity
             gyro = obs.robot_state.gyro
             lean_deg = np.degrees(np.arccos(max(-1.0, min(1.0, -pg[2])))) if pg else float("nan")
+            velocities = [obs.robot_state.motor_velocities[name] for name in self._dof_order]
+            max_vel_name = self._dof_order[int(np.argmax(np.abs(velocities)))]
             print(
                 f"Walk: proj_grav={tuple(round(v, 3) for v in pg)} gyro={tuple(round(v, 3) for v in gyro)} "
-                f"lean={lean_deg:.1f}deg max|action|={float(np.max(np.abs(action))):.2f}",
+                f"lean={lean_deg:.1f}deg max|action|={float(np.max(np.abs(action))):.2f} "
+                f"max|vel|={float(np.max(np.abs(velocities))):.2f} rad/s ({max_vel_name})",
                 end="\r\n", flush=True,
             )
 

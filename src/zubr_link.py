@@ -47,6 +47,11 @@ def ticks_to_rad(ticks: int) -> float:
     return ticks * (2.0 * math.pi / TICKS_PER_REV)
 
 
+def rad_to_ticks(rad: float) -> int:
+    """Inverse of ticks_to_rad — convert a target angle in radians to raw encoder ticks."""
+    return round(rad * (TICKS_PER_REV / (2.0 * math.pi)))
+
+
 @dataclass
 class Telemetry:
     """One decoded state frame from the STM32."""

@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 from constants import MOTOR_TO_ID, NEUTRAL_POSE, KP_DEFAULT
-from robot_controller import RobotController
+from zubr_robot_controller import ZubrRobotController
 from scheduler import Scheduler
 from input.input_source import InputSource
 from input.keyboard_input import KeyboardInputSource
@@ -54,7 +54,7 @@ def build_input_source() -> InputSource:
     return KeyboardInputSource(move_keys=MOVE_KEYS)
 
 
-def ramp_to_neutral(controller: RobotController, duration_s: float = 2.0) -> None:
+def ramp_to_neutral(controller: ZubrRobotController, duration_s: float = 2.0) -> None:
     """Ramp all motors smoothly to neutral position before starting the control loop."""
     motor_ids = list(MOTOR_TO_ID.values())
     initial_positions = np.array(controller.sync_read_present_position(motor_ids))
@@ -81,7 +81,8 @@ def main() -> None:
 
     PID_FILE.write_text(f"{os.getpid()}\n", encoding="ascii")
 
-    controller = RobotController()
+    dry_run = os.environ.get("MICROBAN_DRY_RUN", "0") == "1"
+    controller = ZubrRobotController(dry_run=dry_run)
     motor_ids = list(MOTOR_TO_ID.values())
     controller.sync_write_torque_enable(motor_ids, [True] * len(motor_ids))
     controller.sync_write_status_return_level(motor_ids, [1] * len(motor_ids))
