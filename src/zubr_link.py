@@ -11,6 +11,7 @@ copied from that script unchanged.
 
 import math
 import struct
+import time
 from dataclasses import dataclass
 
 import serial
@@ -29,7 +30,7 @@ _DIRECTIVE = struct.Struct("<hihihh16h")
 # State (STM32 -> host): imu accel/gyro/quaternion (10 int16), remote control (buttons
 # + 4 joystick axes), the 2 requested variable reads, then (position, velocity) per
 # motor for all 16 motors, then a trailing CRC16 — see ~/zubr.py.
-_STATE = struct.Struct("<10hi4bhihi32hh")
+_STATE = struct.Struct("<10hi4bhihi32hH")
 
 
 def _crc16(data: bytes) -> int:
@@ -94,6 +95,17 @@ class ZubrLink:
         timeout: float = 0.025,
     ) -> None:
         self._ser = serial.Serial(port, baudrate=baudrate, timeout=timeout)
+        # Diagnostics from the most recent poll() call — see docs/dev/zubr_real_hardware.md's
+        # timing investigation. last_read_ms times only the self._ser.read() call itself
+        # (write + unpack/CRC are negligible next to it), so it directly answers "did this
+        # attempt time out waiting (~= self._ser.timeout), or come back fast with wrong
+        # content?" — the two failure modes read identically as "None" to callers otherwise,
+        # but point at very different root causes (STM32-side processing latency vs. a
+        # framing/stale-buffer bug on either end).
+        self.last_failure_reason: str | None = None
+        self.last_read_ms: float = 0.0
+        self.last_sent: bytes = b""
+        self.last_raw: bytes = b""
 
     def poll(
         self,
@@ -103,7 +115,7 @@ class ZubrLink:
     ) -> Telemetry | None:
         """Send one directive and return the parsed response, or None on a
         dropped/short/CRC-mismatched frame (matches ~/zubr.py's "Frame dropped or
-        timeout" case).
+        timeout" case). See last_failure_reason/last_read_ms for which and how long.
 
         Defaults to leaving every motor relaxed (RELAX_POSITION) and writing nothing —
         safe to call in a read-only polling loop.
@@ -118,14 +130,34 @@ class ZubrLink:
         control = [write_idx1, write_val1, write_idx2, write_val2, read_idx1, read_idx2, *goal_positions]
         payload = _DIRECTIVE.pack(*control)
         payload += struct.pack("<H", _crc16(payload))
-        self._ser.write(payload)
 
+        # Discard anything already sitting in the receive buffer before sending a new
+        # directive. Without this, a response that arrived a little later than this
+        # method assumed (e.g. the previous call's read() gave up right as it landed)
+        # sits in the OS buffer until the *next* read() call consumes it first —
+        # producing a byte sequence that straddles two frames: full-length, but
+        # misaligned, so it fails CRC even though nothing was actually corrupted.
+        # Diagnosed from a real run where every single failure was fast (~7-10ms,
+        # nowhere near the 25ms timeout) and crc_mismatch, never short_read/timeout —
+        # exactly what stale-buffer misalignment looks like, as opposed to the STM32
+        # genuinely being slow to respond. See docs/dev/zubr_real_hardware.md.
+        self._ser.reset_input_buffer()
+        self._ser.write(payload)
+        self.last_sent = payload
+
+        read_start = time.perf_counter()
         raw = self._ser.read(_STATE.size)
+        self.last_read_ms = (time.perf_counter() - read_start) * 1000.0
+        self.last_raw = raw
+
         if len(raw) != _STATE.size:
+            self.last_failure_reason = f"short_read:{len(raw)}/{_STATE.size}B"
             return None
         fields = _STATE.unpack(raw)
         if fields[-1] != _crc16(raw[:-2]):
+            self.last_failure_reason = "crc_mismatch"
             return None
+        self.last_failure_reason = None
         return Telemetry._from_fields(fields)
 
     def close(self) -> None:

@@ -175,6 +175,174 @@ Toggle `v`, confirm `gyro=` sits near 0 while stationary and `max|action|`/
 *then* consider a real (non-dry-run) attempt — robot secured, ready to cut power,
 same as every real test on this backend so far.
 
+### Update 4: real tests are stable at low speed, still diverge at higher vx — suspect timing
+
+With the gyro fix in place, `vx=0`/`0.1` real tests (held in the air) came out sane
+and bounded (`max|action|` 0.08-0.3, small lean) — a real improvement. But `vx=0.2`
+consistently destabilized within a few hundred ms, both held in the air and (worse,
+faster: ~16° lean in ~120ms) on the ground with no spotter — this last one should
+not be repeated without support/spotting; an unsupported real fall risk was reached.
+
+Two hypotheses considered:
+- **No ground contact** (held-in-air tests only) — plausible there, but the
+  on-ground test diverged the same way with real ground contact present, which
+  weakens this as the sole explanation.
+- **Variable, uncompensated control-loop latency** — the more likely remaining
+  cause. `sync_read_present_position()`'s retry loop (added so a single dropped
+  frame wouldn't crash `main.py` — see Update 1) can silently stretch a nominal
+  20ms tick to ~200ms (up to 8 retries * 25ms serial timeout) *without* printing
+  anything, since the "serial read error" warning only fires when every retry in
+  a call fails. `Scheduler.run()` has no compensation for an overlong tick, and
+  `moves/walk.py`'s reference-phase counter advances once per *call*, not once
+  per real 20ms — so a stretched tick desyncs it from real elapsed time. This
+  would plausibly get worse under load if higher motor current increases the
+  frame-drop rate (the EMI hypothesis from Update 3's context), which would
+  produce exactly "stable at rest, destabilizes once it moves harder."
+
+**Added, not yet correlated with real data**: `MICROBAN_ZUBR_TIMING_DEBUG=1`
+makes `ZubrRobotController._poll()` print `zubr: poll needed N attempts (X.X ms)`
+every time a read needed more than one attempt — direct visibility into exactly
+the latency spikes described above, which were previously invisible. Verified the
+instrumentation fires correctly against a synthetic flaky link before handing it
+over. Run alongside `MICROBAN_WALK_DEBUG=1` on the next test and check whether
+these lines cluster right before/during a lean/action spike — that would confirm
+the timing hypothesis directly rather than leaving it as speculation.
+
+### Update 5: real data — retries are the baseline, not an exception
+
+Result of Update 4's instrumentation: on a real run, **nearly every single poll**
+needed a retry, including throughout the completely static `ramp_to_neutral()`
+phase before walk was even toggled — `zubr: poll needed 2 attempts (~20ms)`,
+extremely consistently (19.6-20.3ms), the *entire time*, motion or not. This
+rules out motor-current/EMI as the primary cause of the *baseline* overhead (it's
+present at zero current draw) and points instead at a systematic timing/protocol
+mismatch — most likely the STM32 only produces a fresh valid response once per
+its own internal cycle, and the host's fixed-cadence polling is frequently out of
+phase with it, so the first attempt catches a stale/not-yet-ready frame.
+
+Separately, during actual walking — especially approaching a fall — attempt
+counts got measurably worse (3, 4, 5, 6, up to 8 attempts, ~30-80ms) and these
+spikes clustered in the same stretches as the biggest lean/action growth, though
+not as one isolated smoking-gun spike — more a generally noisier window
+overlapping the escalation. Consistent with, not proof of, a reinforcing loop
+(worse timing → worse tracking → harder corrective motion → more load → worse
+timing).
+
+Net effect: **the control loop has not actually run at a clean 50Hz/20ms in any
+test so far** — every test, including the ones that looked stable at low `vx`,
+ran under this same persistent baseline overhead. That reframes today's results:
+even the "good" runs weren't testing the policy under its trained assumptions.
+
+**Added finer-grained instrumentation** to distinguish *why* an attempt failed —
+previously both failure modes were indistinguishable ("dropped/corrupt"):
+- `zubr_link.ZubrLink` now exposes `last_failure_reason` (`"short_read:N/92B"` —
+  fewer bytes than expected arrived before the 25ms timeout, i.e. object
+  genuinely wasn't ready in time; or `"crc_mismatch"` — a full frame arrived but
+  its content was wrong, i.e. more consistent with stale/misaligned buffer
+  content than a slow response) and `last_read_ms` (how long that specific
+  `read()` call actually took — near-instant vs. near the full 25ms timeout is
+  itself diagnostic of which failure mode occurred, independent of the label).
+- `ZubrRobotController._poll()`'s `MICROBAN_ZUBR_TIMING_DEBUG=1` output now
+  includes both per failed attempt: `zubr: poll needed 3 attempts (29.7 ms)
+  [short_read:0/92B@25.0ms, crc_mismatch@1.2ms]`. Also now prints when *every*
+  attempt in a call fails (previously silent under timing-debug specifically,
+  though `Scheduler`'s own "serial read error" warning still fires separately).
+  Verified against a synthetic link producing each failure mode before handing
+  this over.
+
+Run the same `MICROBAN_ZUBR_TIMING_DEBUG=1 MICROBAN_WALK_DEBUG=1` command again —
+the reasons/timings in the new output should show whether it's consistently
+`short_read` near the full timeout (points to genuine STM32-side response
+latency) or consistently `crc_mismatch` arriving fast (points to a framing/stale-
+buffer bug, possibly fixable in software without needing STM32 firmware changes).
+
+### Update 6: root cause found — stale bytes in the receive buffer, fixed
+
+Result of Update 5's finer-grained instrumentation: **every single failure across
+an entire real run — hundreds of polls — was `crc_mismatch`, arriving in ~7-10ms**.
+Not one `short_read`/timeout anywhere. That settles the question: the STM32 is not
+slow. A full-length frame arriving fast but failing its own CRC, this consistently,
+means we're reading a byte sequence that straddles two frames — a stale-but-valid
+frame would still pass its own CRC, so this is misalignment, not corruption or
+STM32-side latency.
+
+**Root cause**: `ZubrLink.poll()` never flushed the serial receive buffer before
+sending a new directive. If a response arrived a little later than a previous
+`read()` call assumed (that call already gave up, or moved on), its bytes sat in
+the OS buffer until the *next* `read()` consumed them first — a leftover tail from
+one frame followed by the head of the next, full length, wrong content. This
+recurred almost every tick, explaining the near-universal "needs 2 attempts, first
+one crc_mismatch" baseline from Update 5, entirely independent of motor activity —
+consistent with it being present from the very start of every test today,
+including the completely static `ramp_to_neutral()` phase.
+
+**Fixed**: `poll()` now calls `self._ser.reset_input_buffer()` immediately before
+writing each new directive, discarding anything left over from before. Safe to do
+here specifically because the protocol is strictly synchronous request/response —
+by the time we're about to send the next request, any response related to the
+previous one has long since either been consumed or given up on.
+
+This is the first concrete, non-speculative root cause found for the retry
+pattern itself (as opposed to the RL instability, which had its own separate,
+already-fixed causes — gyro frame, gyro scale). If it holds, `MICROBAN_ZUBR_TIMING_DEBUG=1`
+on the next run should show mostly `1 attempt` (no line printed at all, since the
+debug line only fires when `attempt > 1`) instead of the near-universal `2
+attempts` seen before — a large, real reduction in per-tick timing jitter, which
+was one of the two live hypotheses (alongside no-ground-contact dynamics and the
+shoulder offset) for why higher-`vx` walks kept destabilizing. Not yet tested
+against real hardware.
+
+### Update 7: the buffer-flush fix did nothing — real root cause is a firmware-side race
+
+Re-ran with `reset_input_buffer()` in place: **identical pattern, no improvement at
+all** — same near-universal 2-attempts-per-poll, same `crc_mismatch@~9ms`. That
+falsifies the Update 6 diagnosis. A host-side receive-buffer flush cannot explain a
+result that didn't change once one was added.
+
+Two follow-up diagnostics, both read-only ([`src/zubr_diagnose_timing.py`](../../src/zubr_diagnose_timing.py),
+motors always left relaxed):
+
+1. **Delay sweep** — single-attempt polls at fixed inter-request delays from 0 to
+   30ms. Failure rate sat flat at **~44-55% for every delay tested**, including
+   values far from any plausible alias of a ~10ms STM32 cycle. This rules out a
+   phase-lock between our polling cadence and an STM32-internal loop (the Update 6
+   framing's alternative explanation) — if that were the cause, some delay should
+   have clearly escaped it, and none did.
+2. **Byte-level dump of failing frames** (`--dump-failures`) — the actual finding.
+   Failing frames are **not corrupted**: every field is internally coherent and
+   physically plausible. Diffed against the immediately preceding good frame, the
+   large static block (all 16 motor positions/velocities — motors were at rest,
+   relaxed) is **byte-identical every single time**. The only bytes that differ are
+   exactly the fields expected to change fast on their own — accel/gyro (sensor
+   jitter) and a monotonically-incrementing counter — each incremented by a
+   plausible, small step, never garbage.
+
+**Revised root cause (firmware-side, not host-side)**: this looks like the STM32
+computes the response CRC over its buffer, but a separate, faster interrupt (the one
+updating IMU/accel/gyro and that counter) is still free to write into the *same*
+buffer between when the CRC is computed and when the frame actually finishes
+transmitting. The bytes that go out are a genuine torn mix — mostly the snapshot the
+CRC was computed against, plus a couple of fields already bumped to their next value
+by the time transmission caught up — which is why the content reads as completely
+sane telemetry that simply doesn't hash to the CRC that was appended to it.
+
+If correct, this is not fixable from the host side (short of not checking CRC at
+all, which was explicitly rejected as too risky for a path that feeds real motor
+commands — see decision below). `reset_input_buffer()` is harmless and stays in
+`zubr_link.py`, but it does not address this.
+
+**Decision (user, 2026-09-17)**: pursue getting access to the STM32 firmware source
+or its author, rather than a host-side workaround. This is now a concrete, evidenced
+bug report, not a guess: *"CRC appears to be computed against the response buffer
+before it's fully frozen against a concurrent sensor-update ISR — frames that fail
+CRC contain coherent, plausible values (not corruption), and the only fields that
+differ from the previous good frame are the fast-changing ones (accel/gyro, a
+counter), never the slow ones (motor position/velocity, unchanged when at rest).
+Suggests the CRC should be computed over a snapshot taken atomically (e.g. with the
+relevant interrupt briefly disabled) rather than over the live buffer."* Until this
+is fixed upstream, expect the ~50% retry rate to persist regardless of anything
+done in this repo.
+
 ## What changed
 
 - **New: [`src/zubr_robot_controller.py`](../../src/zubr_robot_controller.py)** —
@@ -202,6 +370,19 @@ same as every real test on this backend so far.
   setup`'s `uv sync --frozen` (no `--group sim`) — leaving it sim-only would have made
   `main.py` fail at import with `No module named 'serial'` the moment this shipped.
   Caught by actually reproducing that exact deploy command before calling this done.
+- **New: [`src/input/zubr_remote_input.py`](../../src/input/zubr_remote_input.py)** —
+  `main.py`'s counterpart to `input/zubr_joystick_input.py` (which only ever wired
+  into `sim_main.py --joystick`). Same axis mapping/signs/"velocity from the
+  remote, everything else from the keyboard" design, but **not** the same
+  implementation: `zubr_joystick_input.py` opens and polls its own `ZubrLink`,
+  which is fine in sim (nothing else talks to the STM32 there) but would corrupt
+  both streams on real hardware, where `ZubrRobotController` already owns the one
+  connection to `/dev/ttyS2` and this protocol only tolerates one poller at a
+  time. `ZubrRemoteInputSource` instead takes a reference to that controller and
+  reads its new `latest_telemetry` property — the same frame the controller just
+  fetched for motor/IMU state, at no extra STM32 traffic. Opt in with
+  `MICROBAN_INPUT=zubr_remote` (see [usage.md](../usage.md)); never
+  auto-detected, unlike the gamepad.
 
 ## Read/write model and safety design
 

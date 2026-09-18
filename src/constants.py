@@ -129,6 +129,25 @@ MOTOR_SIGN = {
 # Calibrate with: PYTHONPATH=src uv run --group sim src/hw_state_stream.py --calibrate-zero N
 # (robot must be held/standing in its true NEUTRAL_POSE while it runs).
 MOTOR_ZERO_TICKS: dict[str, int] = {}
+MOTOR_ZERO_TICKS: dict[str, int] = {
+    'right_shoulder_pitch': 30,
+    'left_shoulder_pitch': 12,
+    'right_shoulder_roll': -3,
+    'left_shoulder_roll': -100,
+    'right_hip_yaw': -18,
+    'left_hip_yaw': 199,
+    'right_hip_roll': -93,
+    'left_hip_roll': 38,
+    'right_hip_pitch': 20,
+    'left_hip_pitch': 19,
+    'right_knee': -33,
+    'left_knee': 8,
+    'right_ankle_pitch': -68,
+    'left_ankle_pitch': -66,
+    'right_ankle_roll': -163,
+    'left_ankle_roll': 112,
+}
+
 
 # STM32/zubr board only: raw-gyro-count -> rad/s scale factor, applied uniformly to
 # all 3 axes in zubr_robot_controller.py's read_gyro() (after the frame correction —

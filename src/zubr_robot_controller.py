@@ -33,6 +33,7 @@ for channels that don't need their own fresh transaction.
 """
 
 import math
+import os
 import time
 
 import numpy as np
@@ -102,6 +103,20 @@ def _adapt_sensor_frame_vector(vec: tuple[float, float, float]) -> tuple[float, 
 # either crash the whole control loop (a struct.error packing an out-of-range tick
 # count) or, worse, silently send whatever garbage tick value the overflow wrapped to.
 _MAX_SAFE_RAD = math.pi
+
+# Set MICROBAN_ZUBR_TIMING_DEBUG=1 to log every _poll() that needed more than one
+# attempt: "zubr: poll needed N attempts (X.X ms)". A tick that needs several
+# retries can silently stretch from ~1ms to ~200ms (retries * ZubrLink's 25ms serial
+# timeout) with NO warning otherwise — sync_read_present_position() only ever prints
+# something if ALL _READ_RETRIES attempts fail, so a tick that succeeds on, say, the
+# 6th attempt costs ~150ms and nothing shows it. Scheduler.run() has no compensation
+# for an overlong tick (it just starts the next one immediately), and the walk
+# policy's reference-phase counter (moves/walk.py) advances once per *call*, not
+# once per real 20ms — so a stretched tick desyncs it from real elapsed time. Added
+# to directly measure whether this correlates with observed instability (a real,
+# on-ground test diverged specifically once vx increased, which is also when
+# reference-phase tracking engages) rather than continuing to guess.
+_TIMING_DEBUG = os.environ.get("MICROBAN_ZUBR_TIMING_DEBUG", "0") == "1"
 
 
 class ZubrRobotController:
@@ -369,13 +384,36 @@ class ZubrRobotController:
         None if every attempt drops/corrupts). Each one sends the *same* current
         _goal_ticks — a retried attempt is not a new command, just resending the
         one that didn't get an answer."""
-        for _ in range(retries):
+        start = time.perf_counter() if _TIMING_DEBUG else 0.0
+        failures: list[str] = []
+        for attempt in range(1, retries + 1):
             telemetry = self._link.poll(goal_positions=list(self._goal_ticks))
             if telemetry is not None:
                 self._latest = telemetry
+                if _TIMING_DEBUG and attempt > 1:
+                    elapsed_ms = (time.perf_counter() - start) * 1000.0
+                    print(
+                        f"zubr: poll needed {attempt} attempts ({elapsed_ms:.1f} ms) "
+                        f"[{', '.join(failures)}]",
+                        flush=True,
+                    )
                 return telemetry
             self._dropped_count += 1
+            if _TIMING_DEBUG:
+                failures.append(f"{self._link.last_failure_reason}@{self._link.last_read_ms:.1f}ms")
+        if _TIMING_DEBUG:
+            elapsed_ms = (time.perf_counter() - start) * 1000.0
+            print(f"zubr: poll FAILED all {retries} attempts ({elapsed_ms:.1f} ms) [{', '.join(failures)}]", flush=True)
         return None
+
+    @property
+    def latest_telemetry(self) -> Telemetry | None:
+        """Most recent successfully decoded state frame, or None before the first
+        one arrives. Exposed so other components (e.g. a remote-joystick input
+        source) can read fields like the zubr remote's joystick axes without
+        opening a second connection to this strictly one-master-at-a-time serial
+        link — see input/zubr_remote_input.py."""
+        return self._latest
 
     def _require_latest(self) -> Telemetry:
         if self._latest is None:

@@ -57,6 +57,18 @@ A Bluetooth Xbox controller can be used instead of the keyboard. The detailed ex
 
 Using a gamepad allows to drive the robot through two different modes: with a terminal (SSH) or fully headless (no SSH, no terminal). The second mode is particularly useful for demonstration purposes, due to the fact that it allows to drive the robot without any computer connected to it.
 
+## Controlling with the zubr remote
+
+On the STM32/zubr hardware backend, the board's own handheld remote can drive
+velocity directly (right stick: `vx`/`vy`, left stick X: `vtheta`) while move
+toggling, reset and stop stay on the keyboard — walk is force-enabled the whole
+time, since the remote's buttons aren't decoded. Unlike the gamepad, this is never
+auto-detected; opt in with:
+
+```
+MICROBAN_INPUT=zubr_remote make run
+```
+
 ## Moves
 
 Moves are toggled independently and run on top of the neutral pose:

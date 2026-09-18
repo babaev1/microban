@@ -35,12 +35,20 @@ MOVE_KEYS = {"h": "head", "s": "squat", "v": "walk"}
 GAMEPAD_BUTTON_MOVES = {"A": "walk"}
 
 
-def build_input_source() -> InputSource:
+def build_input_source(controller: ZubrRobotController) -> InputSource:
     """Use the gamepad when one is connected, otherwise fall back to the keyboard.
 
-    Override with MICROBAN_INPUT=keyboard|gamepad.
+    Override with MICROBAN_INPUT=keyboard|gamepad|zubr_remote. zubr_remote (the
+    STM32 board's own handheld remote) is never auto-detected — unlike a USB/BT
+    gamepad, there's no separate device to probe for, so it must be requested
+    explicitly.
     """
     requested = os.environ.get("MICROBAN_INPUT", "auto").lower()
+
+    if requested == "zubr_remote":
+        from input.zubr_remote_input import ZubrRemoteInputSource
+
+        return ZubrRemoteInputSource(controller, move_keys=MOVE_KEYS)
 
     if requested in ("auto", "gamepad"):
         from input.gamepad_input import GamepadInputSource, find_gamepad_path
@@ -94,7 +102,7 @@ def main() -> None:
         scheduler = Scheduler(
             frequency_hz=50.0,
             controller=controller,
-            input_source=build_input_source(),
+            input_source=build_input_source(controller),
             moves={
                 "head": RotateHeadMove(),
                 "squat": SquatMove(),

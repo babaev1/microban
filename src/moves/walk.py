@@ -37,7 +37,7 @@ class WalkMove(Move):
         # Load ONNX policy
         self._ort_session = ort.InferenceSession(f"src/agents/{AGENT_NAME}")
 
-        self.action_scale = 1.0
+        self.action_scale = 0.7  #1.0
 
         # Reference pose and per-joint order: read from ONNX metadata. joint_names is the
         # exact order the policy was trained on for joint_pos/joint_vel/actions — observations
