@@ -3,28 +3,6 @@
 
 import numpy as np
 
-# MOTOR_TO_ID = {
-#     "left_hip_yaw": 11,
-#     "left_hip_roll": 12,
-#     "left_hip_pitch": 13,
-#     "left_knee": 14,
-#     "left_ankle_pitch": 15,
-#     "left_ankle_roll": 16,
-#     "right_hip_yaw": 21,
-#     "right_hip_roll": 22,
-#     "right_hip_pitch": 23,
-#     "right_knee": 24,
-#     "right_ankle_pitch": 25,
-#     "right_ankle_roll": 26,
-#     "left_shoulder_pitch": 31,
-#     "left_shoulder_roll": 32,
-#     #"left_elbow": 33,
-#     "right_shoulder_pitch": 41,
-#     "right_shoulder_roll": 42,
-#     #"right_elbow": 43,
-#     #"head": 51,
-# }
-
 MOTOR_TO_ID = {
     "left_hip_yaw": 5,
     "left_hip_roll": 7,
@@ -48,27 +26,6 @@ MOTOR_TO_ID = {
 }
 ID_TO_MOTOR = {v: k for k, v in MOTOR_TO_ID.items()}
 
-NEUTRAL_POSE = {
-    "left_hip_yaw": float(np.deg2rad(0.0)),
-    "left_hip_roll": float(np.deg2rad(0.0)),
-    "left_hip_pitch": float(np.deg2rad(-15.0)),
-    "left_knee": float(np.deg2rad(30.0)),
-    "left_ankle_pitch": float(np.deg2rad(-15.0)),
-    "left_ankle_roll": float(np.deg2rad(0.0)),
-    "right_hip_yaw": float(np.deg2rad(0.0)),
-    "right_hip_roll": float(np.deg2rad(0.0)),
-    "right_hip_pitch": float(np.deg2rad(-15.0)),
-    "right_knee": float(np.deg2rad(30.0)),
-    "right_ankle_pitch": float(np.deg2rad(-15.0)),
-    "right_ankle_roll": float(np.deg2rad(0.0)),
-    "left_shoulder_pitch": float(np.deg2rad(0.0)),
-    "left_shoulder_roll": float(np.deg2rad(0.0)),
-    #"left_elbow": float(np.deg2rad(0.0)),
-    "right_shoulder_pitch": float(np.deg2rad(0.0)),
-    "right_shoulder_roll": float(np.deg2rad(0.0)),
-    #"right_elbow": float(np.deg2rad(0.0)),
-    #"head": float(np.deg2rad(0.0)),
-}
 NEUTRAL_POSE = {
     "left_hip_yaw": float(np.deg2rad(0.0)),
     "left_hip_roll": float(np.deg2rad(0.0)),
@@ -210,7 +167,7 @@ OVERCURRENT_PROXY_DELAY_TICKS: int = 3   # number of ticks to delay the proxy cu
 # Velocity command limits [m/s, m/s, rad/s], applied centrally to every input source.
 # Input sources emit normalized commands in [-1, 1]; scale_velocity() maps them to these.
 # Rotation gets a wider range when turning in place (vx = vy = 0) than while translating.
-VX_MAX: float = 0.7
+VX_MAX: float = 0.5            #0.7
 VX_MAX_BACKWARD: float = 0.5  # backward (vx < 0) is capped lower than forward
 VY_MAX: float = 0.3
 VTHETA_MAX_STATIONARY: float = 3.0
