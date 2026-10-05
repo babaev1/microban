@@ -47,6 +47,10 @@ def ticks_to_rad(ticks: int) -> float:
     """Convert raw encoder ticks to radians (16384 ticks == 2*pi rad)."""
     return ticks * (2.0 * math.pi / TICKS_PER_REV)
 
+def measured_speed_ticks_to_rad(ticks: int) -> float:
+    """Convert raw encoder ticks to radians per second speed ."""
+    return ticks * 0.006163
+
 
 def rad_to_ticks(rad: float) -> int:
     """Inverse of ticks_to_rad — convert a target angle in radians to raw encoder ticks."""
