@@ -37,8 +37,6 @@ class WalkMove(Move):
         # Load ONNX policy
         self._ort_session = ort.InferenceSession(f"src/agents/{AGENT_NAME}")
 
-        self.action_scale = 0.8  #1.0
-
         # Reference pose and per-joint order: read from ONNX metadata. joint_names is the
         # exact order the policy was trained on for joint_pos/joint_vel/actions — observations
         # must be built and actions decoded in this order, NOT the constants.py
@@ -51,6 +49,20 @@ class WalkMove(Move):
         positions = [float(v) for v in meta["default_joint_pos"].split(",")]
         self._default_pose: dict[str, float] = dict(zip(self._dof_order, positions))
         self._last_action = [0.0] * len(self._dof_order)
+
+        # action_scale is per-joint in newer exports (e.g. a reduced 0.3 scale on the
+        # shoulder joints only, to curb arm swing) but a single bare scalar in older ones
+        # (every checkpoint through walk0930.onnx) — a hardcoded scalar here silently
+        # applied the WRONG per-joint scale on any checkpoint using the newer format
+        # (0.8 instead of 0.3 on the shoulders — 2.67x too large), which is exactly what
+        # produced visibly exaggerated, mirrored shoulder-pitch twitching at a near-zero
+        # command: mjlab's own JointPositionAction reads this per-joint, so it never
+        # showed the fault there. Broadcast a single value across every joint for the
+        # old format; use the array as-is for the new one.
+        scales = [float(v) for v in meta["action_scale"].split(",")]
+        if len(scales) == 1:
+            scales = scales * len(self._dof_order)
+        self._action_scale: dict[str, float] = dict(zip(self._dof_order, scales))
 
         # on_start ramps target_angles from wherever the robot was holding to
         # _default_pose over this many seconds, instead of jumping there in one
@@ -186,7 +198,7 @@ class WalkMove(Move):
 
         # Update command
         for i, name in enumerate(self._dof_order):
-            command.target_angles[name] = self._default_pose[name] + action[i] * self.action_scale
+            command.target_angles[name] = self._default_pose[name] + action[i] * self._action_scale[name]
 
         if DEBUG_PRINT and (obs.robot_state.time_s - self._last_debug_print_s) >= DEBUG_PRINT_INTERVAL_S:
             self._last_debug_print_s = obs.robot_state.time_s
