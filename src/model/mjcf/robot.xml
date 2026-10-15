@@ -71,7 +71,7 @@
         <geom name="Hip_Yaw_Right_primitive" class="collision" size="0.01 0.01 0.01" pos="0 0.003 -0.016617" quat="1 0 0 0" type="box" />
         <body name="Lever_Right" pos="0 -0.021475 -0.019108" quat="0.70710678 0 0.70710678 0">
           <inertial pos="0.019000 0.000001 -0.000049" mass="0.015000" fullinertia="4.148207e-06 3.533191e-06 3.533191e-06 0.000000e+00 0.000000e+00 1.882862e-20" />
-          <joint name="right_hip_roll" type="hinge" pos="0 0 0" axis="0 0 1" range="-0.6 0.22" class="SKS2401"/>
+          <joint name="right_hip_roll" type="hinge" pos="0 0 0" axis="0 0 1" range="-1.57 0.22" class="SKS2401"/>
           <geom name="Lever_Right_visual" class="visual" pos="0.019509 0.001675 0.007375" quat="0.70710678 0 -0.70710678 0" type="mesh" mesh="Lever_Right" />
           <geom name="Lever_Right_primitive" contype="0" conaffinity="0" size="0.01 0.01 0.015" pos="0.019509 0.001675 0.007375" quat="0.70710678 0 -0.70710678 0" type="box" />
           <body name="Hip_Right" pos="0.038 0 -5e-05" quat="0.5 -0.5 -0.5 -0.5">
@@ -86,19 +86,20 @@
               <geom name="Shin_Right_primitive" class="collision" size="0.01 0.01 0.025" pos="0.007425 0.030602 0.001675" quat="0.70710678 0.70710678 0 0" type="box" />
               <body name="Lever2_Right" pos="0 0.063902 0" quat="-1 0 0 0">
                 <inertial pos="0.000001 0.019000 -0.000051" mass="0.015000" fullinertia="3.533191e-06 4.148207e-06 3.533191e-06 2.046736e-20 0 0" />
-                <joint name="right_ankle_pitch" type="hinge" pos="0 0 0" axis="0 0 1" range="-1.5 2.2" class="SKS2401"/>
+                <joint name="right_ankle_pitch" type="hinge" pos="0 0 0" axis="0 0 1" range="-1.7 2.2" class="SKS2401"/>
                 <geom name="Lever2_Right_visual" class="visual" pos="0.007425 0.019 0.001675" quat="0.70710678 0.70710678 0 0" type="mesh" mesh="Lever2_Right" />
                 <geom name="Lever2_Right_primitive" class="collision" size="0.01 0.01 0.015" pos="0.007425 0.019 0.001675" quat="0.70710678 0.70710678 0 0" type="box" />
                 <body name="foot" pos="0 0.038 -5e-05" quat="0 -0.70710678 0 -0.70710678">
                   <inertial pos="-0.012003 -0.012362 0.000176" mass="0.133000" fullinertia="8.292642e-05 1.078791e-04 4.703554e-05 -1.814908e-06 -1.987411e-07 1.076699e-08" />
                   <joint name="right_ankle_roll" type="hinge" pos="0 0 0" axis="0 0 1" range="-0.35 1.45" class="SKS2401"/>
                   <geom name="Foot_Right_visual" class="visual" pos="-0.012775 -0.0212 0.000425" quat="0.5 -0.5 -0.5 -0.5" type="mesh" mesh="Foot_Right" />
-                  <geom name="right_foot_collision_1" class="collision" size="0.0175 0.0025" pos="-0.030275 -0.0212 -0.038575" quat="0.5 -0.5 -0.5 -0.5" type="cylinder" />
+                  <!--<geom name="right_foot_collision_1" class="collision" size="0.0175 0.0025" pos="-0.030275 -0.0212 -0.038575" quat="0.5 -0.5 -0.5 -0.5" type="cylinder" />
                   <geom name="right_foot_collision_2" class="collision" size="0.0175 0.0025" pos="0.004725 -0.0212 -0.038575" quat="0.5 -0.5 -0.5 -0.5" type="cylinder" />
                   <geom name="right_foot_collision_3" class="collision" size="0.0175 0.0025" pos="0.004725 -0.0212 0.039425" quat="0.5 -0.5 -0.5 -0.5" type="cylinder" />
                   <geom name="right_foot_collision_4" class="collision" size="0.039 0.035 0.0025" pos="-0.012775 -0.0212 0.000425" quat="0.5 -0.5 -0.5 -0.5" type="box" />
                   <geom name="right_foot_collision_5" class="collision" size="0.0175 0.0025" pos="-0.030275 -0.0212 0.039425" quat="0.5 -0.5 -0.5 -0.5" type="cylinder" />
-                  <geom name="right_foot_collision_6" class="collision" size="0.0565 0.0175 0.0025" pos="-0.012775 -0.0212 0.000425" quat="0.5 -0.5 -0.5 -0.5" type="box" />
+                  <geom name="right_foot_collision_6" class="collision" size="0.0565 0.0175 0.0025" pos="-0.012775 -0.0212 0.000425" quat="0.5 -0.5 -0.5 -0.5" type="box" />-->
+                  <geom name="right_foot_collision_0" class="collision" size="0.0565 0.035 0.0025" pos="-0.012775 -0.0212 0.000425" quat="0.5 -0.5 -0.5 -0.5" type="box" />
                   <site group="3" name="right_foot" pos="-0.012775 -0.0237 0.000425" quat="0.5 -0.5 -0.5 -0.5"/>
                 </body>
               </body>
@@ -114,7 +115,7 @@
         <geom name="Hip_Yaw_Left_primitive" class="collision" size="0.01 0.01 0.01" pos="0 0.003 -0.016617" quat="0 0 0 1" type="box" />
         <body name="Lever_Left" pos="0 -0.021475 -0.019108" quat="0 -0.70710678 0 0.70710678">
           <inertial pos="0.019000 -0.000001 -0.000049" mass="0.015000" fullinertia="4.148207e-06 3.533191e-06 3.533191e-06 0.000000e+00 0.000000e+00 1.882862e-20" />
-          <joint name="left_hip_roll" type="hinge" pos="0 0 0" axis="0 0 1" range="-0.22 0.6" class="SKS2401"/>
+          <joint name="left_hip_roll" type="hinge" pos="0 0 0" axis="0 0 1" range="-0.22 1.57" class="SKS2401"/>
           <geom name="Lever_Left_visual" class="visual" pos="0.019509 -0.001675 0.007375" quat="0.70710678 0 -0.70710678 0" type="mesh" mesh="Lever_Left_mirrored" />
           <geom name="Lever_Left_primitive" contype="0" conaffinity="0" size="0.01 0.01 0.015" pos="0.019509 -0.001675 0.007375" quat="0.70710678 0 -0.70710678 0" type="box" />
           <body name="Hip_Left" pos="0.038 0 5e-05" quat="-0.5 0.5 0.5 0.5">
@@ -129,19 +130,20 @@
               <geom name="Shin_Left_primitive" class="collision" size="0.01 0.01 0.025" pos="0.007425 0.030602 0.001675" quat="-0.70710678 -0.70710678 0 0" type="box" />
               <body name="Lever2_Left" pos="0 0.063902 0" quat="-1 0 0 0">
                 <inertial pos="0.000001 0.019000 0.003401" mass="0.015000" fullinertia="3.533191e-06 4.148207e-06 3.533191e-06 2.046736e-20 0 0" />
-                <joint name="left_ankle_pitch" type="hinge" pos="0 0 0" axis="0 0 1" range="-1.5 2.2" class="SKS2401"/>
+                <joint name="left_ankle_pitch" type="hinge" pos="0 0 0" axis="0 0 1" range="-1.7 2.2" class="SKS2401"/>
                 <geom name="Lever2_Left_visual" class="visual" pos="0.007425 0.019 0.001675" quat="0.70710678 0.70710678 0 0" type="mesh" mesh="Lever2_Left_mirrored" />
                 <geom name="Lever2_Left_primitive" class="collision" size="0.01 0.01 0.015" pos="0.007425 0.019 0.001675" quat="0.70710678 0.70710678 0 0" type="box" />
                 <body name="foot_2" pos="0 0.038 5e-05" quat="0 0.70710678 0 0.70710678">
                   <inertial pos="0.012003 -0.012362 -0.000674" mass="0.133000" fullinertia="8.292642e-05 1.078791e-04 4.703554e-05 1.814908e-06 1.987411e-07 1.076699e-08" />
                   <joint name="left_ankle_roll" type="hinge" pos="0 0 0" axis="0 0 1" range="-1.45 0.35" class="SKS2401"/>
                   <geom name="Foot_Left_visual" class="visual" pos="0.012775 -0.0212 -0.000425" quat="0.5 -0.5 -0.5 -0.5" type="mesh" mesh="Foot_Left_mirrored" />
-                  <geom name="left_foot_collision_1" class="collision" size="0.0175 0.0025" pos="0.030275 -0.0212 0.038575" quat="0.5 -0.5 -0.5 -0.5" type="cylinder" />
+                  <!--<geom name="left_foot_collision_1" class="collision" size="0.0175 0.0025" pos="0.030275 -0.0212 0.038575" quat="0.5 -0.5 -0.5 -0.5" type="cylinder" />
                   <geom name="left_foot_collision_2" class="collision" size="0.0175 0.0025" pos="-0.004725 -0.0212 0.038575" quat="0.5 -0.5 -0.5 -0.5" type="cylinder" />
                   <geom name="left_foot_collision_3" class="collision" size="0.0175 0.0025" pos="-0.004725 -0.0212 -0.039425" quat="0.5 -0.5 -0.5 -0.5" type="cylinder" />
                   <geom name="left_foot_collision_4" class="collision" size="0.039 0.035 0.0025" pos="0.012775 -0.0212 -0.000425" quat="0.5 -0.5 -0.5 -0.5" type="box" />
                   <geom name="left_foot_collision_5" class="collision" size="0.0175 0.0025" pos="0.030275 -0.0212 -0.039425" quat="0.5 -0.5 -0.5 -0.5" type="cylinder" />
-                  <geom name="left_foot_collision_6" class="collision" size="0.0565 0.0175 0.0025" pos="0.012775 -0.0212 -0.000425" quat="0.5 -0.5 -0.5 -0.5" type="box" />
+                  <geom name="left_foot_collision_6" class="collision" size="0.0565 0.0175 0.0025" pos="0.012775 -0.0212 -0.000425" quat="0.5 -0.5 -0.5 -0.5" type="box" />-->
+                  <geom name="left_foot_collision_0" class="collision" size="0.0565 0.035 0.0025" pos="0.012775 -0.0212 -0.000425" quat="0.5 -0.5 -0.5 -0.5" type="box" />
                   <site group="3" name="left_foot" pos="0.012775 -0.0237 -0.000425" quat="0.5 -0.5 -0.5 -0.5"/>
                 </body>
               </body>
@@ -152,7 +154,7 @@
 
       <body name="Shoulder_Right" pos="0.010475 -0.0627 0.089592" quat="0.70710678 -0.70710678 0 0">
         <inertial pos="0.000241 0.006836 -0.016422" mass="0.017" fullinertia="3.645264e-06 5.507943e-06 5.411070e-06 6.431185e-08 3.672992e-08 1.062247e-06" />
-        <joint name="right_shoulder_pitch" type="hinge" pos="0 0 0" axis="0 0 1" range="-3.14 1.54" class="SKS2401"/>
+        <joint name="right_shoulder_pitch" type="hinge" pos="0 0 0" axis="0 0 1" range="-3.94 1.54" class="SKS2401"/>
         <geom name="Shoulder_Right_visual" class="visual" pos="0 0 -0.0173" quat="0.70710678 0.70710678 0 0" type="mesh" mesh="Shoulder_Right" />
         <geom name="Shoulder_Right_primitive" class="collision" size="0.0125 0.0125 0.0125" pos="0 0 -0.0173" quat="0.70710678 0.70710678 0 0" type="box" />
         <body name="Hand_Right" pos="-0.0125 0.03 -0.03" quat="0.5 0.5 0.5 0.5">
@@ -171,7 +173,7 @@
 
       <body name="Shoulder_Left" pos="0.010475 0.0627 0.089592" quat="-0.70710678 0.70710678 0 0">
         <inertial pos="0.000241 0.006836 0.016422" mass="0.017" fullinertia="3.645264e-06 5.507943e-06 5.411070e-06 6.431185e-08 -3.672992e-08 -1.062247e-06" />
-        <joint name="left_shoulder_pitch" type="hinge" pos="0 0 0" axis="0 0 1" range="-3.14 1.54" class="SKS2401"/>
+        <joint name="left_shoulder_pitch" type="hinge" pos="0 0 0" axis="0 0 1" range="-3.94 1.54" class="SKS2401"/>
         <geom name="Shoulder_Left_visual" class="visual" pos="0 0 0.0173" quat="-0.70710678 -0.70710678 0 0" type="mesh" mesh="Shoulder_Left_mirrored" />
         <geom name="Shoulder_Left_primitive" class="collision" size="0.0125 0.0125 0.0125" pos="0 0 0.0173" quat="-0.70710678 -0.70710678 0 0" type="box" />
         <body name="Hand_Left" pos="-0.0125 0.03 0.03" quat="0.5 0.5 0.5 0.5">
