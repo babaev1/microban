@@ -40,7 +40,7 @@ import numpy as np
 
 from constants import IMU_MOUNT_QUAT, KP_DEFAULT, MOTOR_SIGN, MOTOR_TO_ID, MOTOR_ZERO_TICKS, ZUBR_GYRO_SCALE, ZUBR_IMU_MOUNT_QUAT
 from imu_reader import quat_apply_inverse
-from zubr_link import DEFAULT_BAUDRATE, DEFAULT_PORT, MOTOR_COUNT, RELAX_POSITION, Telemetry, ZubrLink, rad_to_ticks, ticks_to_rad
+from zubr_link import DEFAULT_BAUDRATE, DEFAULT_PORT, MOTOR_COUNT, RELAX_POSITION, Telemetry, ZubrLink, rad_to_ticks, ticks_to_rad, measured_speed_ticks_to_rad
 from zubr_motor_map import build_slot_map
 
 # read_gyro()/read_acc() below can't just pass the raw sensor reading through the way
@@ -286,7 +286,7 @@ class ZubrRobotController:
         # TODO(verify on real hardware): assumes velocity is reported in the same
         # ticks-per-revolution unit as position ("ticks/s") — zubr.py documents no
         # units for this field, same caveat as gyro (see hw_state_stream.py).
-        return MOTOR_SIGN[name] * ticks_to_rad(telemetry.motor_velocities[motor_id])
+        return MOTOR_SIGN[name] * measured_speed_ticks_to_rad(telemetry.motor_velocities[motor_id])
 
     # ------------------------------------------------------------------
     # Current / voltage — not available from this protocol
