@@ -101,8 +101,8 @@ MOTOR_ZERO_TICKS: dict[str, int] = {
     'left_knee': 8,
     'right_ankle_pitch': -68,
     'left_ankle_pitch': -66,
-    'right_ankle_roll': 200, # -163,
-    'left_ankle_roll': 100,  #112,
+    'right_ankle_roll': 100, # -163,
+    'left_ankle_roll': 50,  #112,
 }
 
 
