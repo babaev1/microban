@@ -41,6 +41,7 @@ from imu_reader import imu_quat_to_body, quat_apply_inverse
 from sim.state_stream import DEFAULT_STREAM_PORT, StateSender, parse_host_port
 from zubr_link import DEFAULT_BAUDRATE, DEFAULT_PORT, ZubrLink, ticks_to_rad
 from zubr_motor_map import build_slot_map
+from zubr_robot_controller import _adapt_sensor_frame_vector
 
 # Spawn pose of the trunk free joint — matches sim/mujoco_controller.py's
 # SPAWN_TRUNK_Z/SPAWN_TRUNK_QUAT for NEUTRAL_POSE's current all-zero angles (identity
@@ -64,17 +65,20 @@ def _imu_from_telemetry(telemetry) -> tuple[tuple[float, float, float], tuple[fl
     (see moves/walk.py's build_observation()), only the gravity direction the fused
     quaternion implies.
 
-    Gyro is reported by the chip in its own local sensor axes, same as accelerometer —
-    it needs the *same* fixed mounting correction as the quaternion before it means
-    anything in body-frame terms, just applied directly to the raw vector rather than
-    composed into an orientation: since the sensor is rigidly co-moving with the
-    trunk, v_body = R(mount) @ v_sensor is a single fixed rotation, not the
-    time-varying body_quat gravity needs (that one's projecting a *world*-frame
-    reference through the current orientation; this is converting one *body-fixed*
-    frame's coordinates into another's, which stays constant regardless of how the
-    whole assembly is currently oriented) — verified against a synthetic sensor/body
-    pair: quat_apply_inverse(conjugate(mount), v_sensor) recovers the known true
-    body-frame vector exactly; the non-conjugated form does not.
+    Gyro is reported by the chip in its own local sensor axes, same as accelerometer,
+    but rotating it by ZUBR_IMU_MOUNT_QUAT alone (as an earlier version of this
+    function did) lands in plain *trunk* frame — not the frame the policy actually
+    observes. moves/walk.py's gyro is base_ang_vel, mjlab's "imu_ang_vel" sensor read
+    at the mjcf's imu *site*, which is itself rotated relative to the trunk by
+    IMU_MOUNT_QUAT — so a correct reading needs composing *both* mounts: "raw BHI260
+    axes -> trunk -> imu-site-as-if-BMI088-mounted". That composition already exists,
+    verified against sim's own ground truth, as zubr_robot_controller.py's
+    _GYRO_FRAME_ADAPTER / _adapt_sensor_frame_vector() — reused here rather than
+    re-derived, since re-deriving it a second time is exactly how this drifted out of
+    sync once already (confirmed live: the single-mount version above put a pure yaw
+    on the wrong output axis entirely, not just the wrong sign).
+    Projected gravity needs no such adapter — see that module's own comment for why
+    (it's an absolute-orientation computation, not a body-fixed vector rotation).
 
     TODO(calibrate on the real board): gyro stays in the STM32's raw register units,
     unconverted (only its *direction* is corrected here, not its scale) — no LSB
@@ -91,9 +95,8 @@ def _imu_from_telemetry(telemetry) -> tuple[tuple[float, float, float], tuple[fl
     body_quat = imu_quat_to_body(quat_wxyz, mount_quat=ZUBR_IMU_MOUNT_QUAT)
     projected_gravity = tuple(float(v) for v in quat_apply_inverse(list(body_quat), [0.0, 0.0, -1.0]))
 
-    mount_conj = _qconj(np.array(ZUBR_IMU_MOUNT_QUAT))
-    gyro_raw = [float(v) for v in telemetry.gyro_raw]
-    gyro_body = tuple(float(v) for v in quat_apply_inverse(list(mount_conj), gyro_raw))
+    gyro_raw = tuple(float(v) for v in telemetry.gyro_raw)
+    gyro_body = _adapt_sensor_frame_vector(gyro_raw)
 
     return gyro_body, projected_gravity
 
