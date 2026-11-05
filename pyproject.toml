@@ -16,6 +16,14 @@ dependencies = [
     # would otherwise leave it uninstalled and main.py would fail at import with
     # "No module named 'serial'". See docs/dev/hw_stream.md.
     "pyserial>=3.5",
+    # Needed by moves/walk.py's OOD detector (src/onnx_obs_stats.py) to read
+    # walk.onnx's obs_normalizer mean/std initializers at startup — onnxruntime's
+    # InferenceSession has no API for initializer *values* (only shapes/metadata
+    # strings), so getting the actual numbers means loading the raw onnx protobuf
+    # graph, which needs the onnx package itself. Read-only, once at WalkMove
+    # construction — no runtime (per-tick) cost. Must be a base dependency, same
+    # reasoning as pyserial above: `make run` deploys with `uv sync --frozen`.
+    "onnx>=1.17.0",
 ]
 
 [dependency-groups]

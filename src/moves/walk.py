@@ -2,6 +2,7 @@
 # Copyright 2026 Marc Duclusaud
 
 import os
+from enum import Enum, auto
 
 import onnxruntime as ort
 import numpy as np
@@ -10,6 +11,7 @@ from constants import MOTOR_TO_ID, KP_DEFAULT, KP_RL
 from controller import ControllerProtocol
 from observer import Observation
 from moves.move import MotorCommand, Move, MoveState
+from onnx_obs_stats import load_obs_normalizer_stats
 
 
 # Set to True to log motor positions and voltages during the walk move
@@ -25,6 +27,29 @@ DEBUG_PRINT_INTERVAL_S = 0.3
 
 # Policy name
 AGENT_NAME = "walk.onnx"
+
+# Out-of-domain (OOD) detector: per-tick, how many standard deviations the live
+# observation's worst channel is from walk.onnx's own training-time per-channel
+# mean/std (see onnx_obs_stats.py) — a cheap, always-available signal of "has the
+# robot's actual state drifted somewhere the policy never saw in training", with no
+# extra model or training data needed. Not yet tuned against real logged data —
+# override via env var while calibrating on real hardware without a code change.
+OOD_Z_THRESHOLD = float(os.environ.get("MICROBAN_OOD_Z_THRESHOLD", "6.0"))
+# Consecutive ticks required to flip the safety state, in either direction (raise ->
+# ramp to the policy's default pose; clear -> ramp back into live inference) — fixed
+# at 8 per spec, not a tuning knob.
+OOD_CONSECUTIVE_TICKS = 8
+
+
+class _SafetyState(Enum):
+    """WalkMove's own internal OOD-response state, layered on top of the scheduler's
+    MoveState (which only tracks user-driven enable/disable toggling, not whether the
+    policy's output is currently trusted)."""
+
+    NORMAL = auto()           # running the policy normally every tick
+    RAMPING_TO_SAFE = auto()  # OOD flagged for OOD_CONSECUTIVE_TICKS; ramping to the policy's own default pose
+    SAFE_HOLD = auto()        # holding default pose; inference paused; watching for OOD to clear
+    RECOVERING = auto()       # OOD clear for OOD_CONSECUTIVE_TICKS; blending live inference back in
 
 
 class WalkMove(Move):
@@ -84,6 +109,24 @@ class WalkMove(Move):
         # Safety parameters
         self._projected_gravity_z_threshold = -0.5  # Threshold for detecting a fall based on projected gravity
 
+        # OOD detector stats (see OOD_Z_THRESHOLD above / onnx_obs_stats.py). Sliced to
+        # the sensor/state channels only — gyro + projected_gravity + joint_pos +
+        # joint_vel + last_action — excluding command (user/agent-driven intent, not a
+        # signal of the robot's own state) and reference_phase (a deterministic timing
+        # signal, same reasoning), which both sit after this prefix in build_observation().
+        obs_mean, obs_std = load_obs_normalizer_stats(f"src/agents/{AGENT_NAME}")
+        self._ood_obs_len = 3 + 3 + 3 * len(self._dof_order)
+        self._ood_mean = obs_mean[: self._ood_obs_len]
+        self._ood_std = obs_std[: self._ood_obs_len]
+
+        self._safety_state = _SafetyState.NORMAL
+        self._ood_consecutive = 0
+        self._clear_consecutive = 0
+        self._safe_ramp_time_s: float | None = None
+        self._safe_ramp_angles: dict[str, float] = {}
+        self._recover_time_s: float | None = None
+        self._last_ood_warn_s: float = 0.0
+
         # Debug print throttle (see DEBUG_PRINT above)
         self._last_debug_print_s: float = 0.0
 
@@ -132,6 +175,13 @@ class WalkMove(Move):
         }
         
     def on_start(self, obs: Observation, command: MotorCommand) -> None:
+        # Defensive: on_stop() already resets the OOD state machine on every normal
+        # deactivation, but a fresh start should never inherit a stale non-NORMAL
+        # state regardless of how the previous run ended.
+        self._safety_state = _SafetyState.NORMAL
+        self._ood_consecutive = 0
+        self._clear_consecutive = 0
+
         # Ramp the pose to _default_pose while still holding the stiffer,
         # pre-walk kp (whatever was in effect, typically KP_DEFAULT) — the
         # robot stays rigid while it moves to the walk starting stance. Kp is
@@ -189,16 +239,71 @@ class WalkMove(Move):
                 )
             return
 
-        # Run policy
+        # OOD check: always run, regardless of safety state — needed both to decide
+        # NORMAL -> RAMPING_TO_SAFE and to know when SAFE_HOLD -> RECOVERING is due.
         input_obs = self.build_observation(obs)
+        ood_z = self._ood_z_score(input_obs)
+        is_ood = ood_z > OOD_Z_THRESHOLD
+        if is_ood:
+            self._ood_consecutive += 1
+            self._clear_consecutive = 0
+        else:
+            self._clear_consecutive += 1
+            self._ood_consecutive = 0
+
+        if DEBUG_PRINT and is_ood and (obs.robot_state.time_s - self._last_ood_warn_s) >= DEBUG_PRINT_INTERVAL_S:
+            self._last_ood_warn_s = obs.robot_state.time_s
+            print(
+                f"Walk: OOD z={ood_z:.1f} (threshold {OOD_Z_THRESHOLD:.1f}) "
+                f"consecutive={self._ood_consecutive} state={self._safety_state.name}",
+                end="\r\n", flush=True,
+            )
+
+        if self._safety_state == _SafetyState.NORMAL and self._ood_consecutive >= OOD_CONSECUTIVE_TICKS:
+            self._enter_safe_ramp(obs)
+
+        if self._safety_state == _SafetyState.RAMPING_TO_SAFE:
+            self._tick_safe_ramp(obs, command)
+            return
+
+        if self._safety_state == _SafetyState.SAFE_HOLD:
+            for name, target in self._default_pose.items():
+                command.target_angles[name] = target
+            if self._clear_consecutive >= OOD_CONSECUTIVE_TICKS:
+                self._enter_recovery(obs)
+            return
+
+        if self._safety_state == _SafetyState.RECOVERING:
+            self._tick_recovery(obs, command, input_obs)
+            return
+
+        # _SafetyState.NORMAL, and not (yet) tripped: run inference as usual.
+        self._run_inference(obs, command, input_obs)
+
+    def _ood_z_score(self, input_obs: list[float]) -> float:
+        """Max |z-score|, over the sensor/state channels only, of input_obs (the
+        observation about to be — or that was just — fed to the policy) against
+        walk.onnx's own training-time per-channel mean/std. See OOD_Z_THRESHOLD."""
+        vec = np.asarray(input_obs[: self._ood_obs_len], dtype=np.float64)
+        z = (vec - self._ood_mean) / self._ood_std
+        return float(np.max(np.abs(z)))
+
+    def _run_inference(
+        self, obs: Observation, command: MotorCommand, input_obs: list[float], blend: float = 1.0
+    ) -> None:
+        """Run the policy and write command.target_angles. `blend` scales the action's
+        contribution (1.0 = normal; <1.0 while RECOVERING ramps it back in) — the
+        default_pose offset is always applied in full regardless, so blend=0 reduces
+        exactly to holding default_pose, matching SAFE_HOLD."""
         ort_inputs = {self._ort_session.get_inputs()[0].name: [input_obs]}
         ort_outs = self._ort_session.run(None, ort_inputs)
         action = ort_outs[0][0]
         self._last_action = action.tolist()
 
-        # Update command
         for i, name in enumerate(self._dof_order):
-            command.target_angles[name] = self._default_pose[name] + action[i] * self._action_scale[name]
+            command.target_angles[name] = (
+                self._default_pose[name] + action[i] * self._action_scale[name] * blend
+            )
 
         if DEBUG_PRINT and (obs.robot_state.time_s - self._last_debug_print_s) >= DEBUG_PRINT_INTERVAL_S:
             self._last_debug_print_s = obs.robot_state.time_s
@@ -207,10 +312,11 @@ class WalkMove(Move):
             lean_deg = np.degrees(np.arccos(max(-1.0, min(1.0, -pg[2])))) if pg else float("nan")
             velocities = [obs.robot_state.motor_velocities[name] for name in self._dof_order]
             max_vel_name = self._dof_order[int(np.argmax(np.abs(velocities)))]
+            blend_str = f" blend={blend:.2f}" if blend < 1.0 else ""
             print(
                 f"Walk: proj_grav={tuple(round(v, 3) for v in pg)} gyro={tuple(round(v, 3) for v in gyro)} "
                 f"lean={lean_deg:.1f}deg max|action|={float(np.max(np.abs(action))):.2f} "
-                f"max|vel|={float(np.max(np.abs(velocities))):.2f} rad/s ({max_vel_name})",
+                f"max|vel|={float(np.max(np.abs(velocities))):.2f} rad/s ({max_vel_name}){blend_str}",
                 end="\r\n", flush=True,
             )
 
@@ -219,6 +325,63 @@ class WalkMove(Move):
             for name in MOTOR_TO_ID.keys():
                 self.position[name].append(obs.robot_state.motor_positions[name])
                 self.voltage[name].append(obs.robot_state.motor_voltages[name])
+
+    def _enter_safe_ramp(self, obs: Observation) -> None:
+        self._safety_state = _SafetyState.RAMPING_TO_SAFE
+        self._safe_ramp_time_s = obs.robot_state.time_s
+        self._safe_ramp_angles = {
+            name: obs.robot_state.motor_positions.get(name, self._default_pose[name])
+            for name in self._default_pose
+        }
+        # Inference is suspended for the rest of this safety episode (ramp + hold), so
+        # nothing would otherwise update _last_action — left alone, it stays frozen at
+        # whatever the policy last output right before the trip (plausibly itself an
+        # extreme value, since that's often what triggered the OOD flag in the first
+        # place), which then feeds straight back into the OOD check's own last_action
+        # channel every subsequent tick and can keep it OOD indefinitely regardless of
+        # the robot's actual physical state. target = default_pose + action*scale, and
+        # the ramp converges to (then holds at) target == default_pose exactly, so the
+        # action that's actually consistent with what's being commanded is zero —
+        # reporting that (instead of the stale value) keeps the observation internally
+        # consistent with the real command for the rest of this episode.
+        self._last_action = [0.0] * len(self._dof_order)
+        if DEBUG_PRINT:
+            print(
+                f"Walk: OOD confirmed for {OOD_CONSECUTIVE_TICKS} consecutive ticks — "
+                "ramping to default pose, inference suspended",
+                end="\r\n", flush=True,
+            )
+
+    def _tick_safe_ramp(self, obs: Observation, command: MotorCommand) -> None:
+        assert self._safe_ramp_time_s is not None
+        t = min((obs.robot_state.time_s - self._safe_ramp_time_s) / self._start_lerp_duration, 1.0)
+        for name, target in self._default_pose.items():
+            command.target_angles[name] = self._safe_ramp_angles[name] * (1.0 - t) + target * t
+        if t >= 1.0:
+            self._safety_state = _SafetyState.SAFE_HOLD
+            self._safe_ramp_time_s = None
+            if DEBUG_PRINT:
+                print("Walk: reached default pose — holding, inference paused", end="\r\n", flush=True)
+
+    def _enter_recovery(self, obs: Observation) -> None:
+        self._safety_state = _SafetyState.RECOVERING
+        self._recover_time_s = obs.robot_state.time_s
+        if DEBUG_PRINT:
+            print(
+                f"Walk: OOD clear for {OOD_CONSECUTIVE_TICKS} consecutive ticks — "
+                "blending inference back in",
+                end="\r\n", flush=True,
+            )
+
+    def _tick_recovery(self, obs: Observation, command: MotorCommand, input_obs: list[float]) -> None:
+        assert self._recover_time_s is not None
+        blend = min((obs.robot_state.time_s - self._recover_time_s) / self._start_lerp_duration, 1.0)
+        self._run_inference(obs, command, input_obs, blend=blend)
+        if blend >= 1.0:
+            self._safety_state = _SafetyState.NORMAL
+            self._recover_time_s = None
+            if DEBUG_PRINT:
+                print("Walk: recovery ramp complete — back to normal inference", end="\r\n", flush=True)
 
     def build_observation(self, obs: Observation) -> list[float]:
         """Build policy observation from robot state."""
@@ -257,6 +420,14 @@ class WalkMove(Move):
             ids = list(MOTOR_TO_ID.values())
             self._controller.sync_write_kp(ids, [KP_DEFAULT] * len(ids))
         self.state = MoveState.INACTIVE
+
+        # So the next on_start()/step() always begins fresh rather than resuming
+        # mid-ramp or mid-hold from before this deactivation.
+        self._safety_state = _SafetyState.NORMAL
+        self._ood_consecutive = 0
+        self._clear_consecutive = 0
+        self._safe_ramp_time_s = None
+        self._recover_time_s = None
 
         # Save json logs
         if LOGGING:
