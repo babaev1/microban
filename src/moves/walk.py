@@ -40,18 +40,6 @@ OOD_Z_THRESHOLD = float(os.environ.get("MICROBAN_OOD_Z_THRESHOLD", "6.0"))
 # at 8 per spec, not a tuning knob.
 OOD_CONSECUTIVE_TICKS = 8
 
-# Secondary OOD signal, layered on top of the z-score above. The z-score is a
-# *marginal* per-channel statistic pooled over the whole training distribution, so
-# joint velocities typical of walking at some other commanded speed don't look
-# anomalous even when they occur at a near-zero velocity command — e.g. a robot
-# held in the air with its feet off the ground "walks on air" trying to balance,
-# which training never saw, but the marginal z-score alone doesn't catch it. This
-# check instead looks for the direct behavioral inconsistency: active leg motion
-# while the robot is being commanded to stand still. Not yet tuned against real
-# logged data — override via env var while calibrating on real hardware.
-STANDING_COMMAND_DEADZONE = float(os.environ.get("MICROBAN_STANDING_DEADZONE", "0.05"))
-STANDING_MAX_JOINT_VEL = float(os.environ.get("MICROBAN_STANDING_MAX_JOINT_VEL", "1.0"))
-
 
 class _SafetyState(Enum):
     """WalkMove's own internal OOD-response state, layered on top of the scheduler's
@@ -255,8 +243,7 @@ class WalkMove(Move):
         # NORMAL -> RAMPING_TO_SAFE and to know when SAFE_HOLD -> RECOVERING is due.
         input_obs = self.build_observation(obs)
         ood_z = self._ood_z_score(input_obs)
-        standing_activity_ood = self._standing_activity_is_ood(obs, input_obs)
-        is_ood = ood_z > OOD_Z_THRESHOLD or standing_activity_ood
+        is_ood = ood_z > OOD_Z_THRESHOLD
         if is_ood:
             self._ood_consecutive += 1
             self._clear_consecutive = 0
@@ -266,9 +253,8 @@ class WalkMove(Move):
 
         if DEBUG_PRINT and is_ood and (obs.robot_state.time_s - self._last_ood_warn_s) >= DEBUG_PRINT_INTERVAL_S:
             self._last_ood_warn_s = obs.robot_state.time_s
-            reason = "standing-activity" if standing_activity_ood else f"z={ood_z:.1f}"
             print(
-                f"Walk: OOD {reason} (z threshold {OOD_Z_THRESHOLD:.1f}) "
+                f"Walk: OOD z={ood_z:.1f} (threshold {OOD_Z_THRESHOLD:.1f}) "
                 f"consecutive={self._ood_consecutive} state={self._safety_state.name}",
                 end="\r\n", flush=True,
             )
@@ -301,18 +287,6 @@ class WalkMove(Move):
         vec = np.asarray(input_obs[: self._ood_obs_len], dtype=np.float64)
         z = (vec - self._ood_mean) / self._ood_std
         return float(np.max(np.abs(z)))
-
-    def _standing_activity_is_ood(self, obs: Observation, input_obs: list[float]) -> bool:
-        """True if vx/vy/vtheta are all commanded ~0 but a joint is moving faster than
-        quiet standing ever does — see STANDING_MAX_JOINT_VEL above for why the
-        marginal z-score alone can't catch this."""
-        vx, vy, vtheta = (obs.user_input.velocity[k] for k in ("vx", "vy", "vtheta"))
-        if max(abs(vx), abs(vy), abs(vtheta)) > STANDING_COMMAND_DEADZONE:
-            return False
-        vel_start = 6 + len(self._dof_order)
-        vel_end = vel_start + len(self._dof_order)
-        joint_vel = input_obs[vel_start:vel_end]
-        return max(abs(v) for v in joint_vel) > STANDING_MAX_JOINT_VEL
 
     def _run_inference(
         self, obs: Observation, command: MotorCommand, input_obs: list[float], blend: float = 1.0
