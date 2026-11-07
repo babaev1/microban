@@ -2,6 +2,7 @@
 # Copyright 2026 Marc Duclusaud
 
 import os
+from collections import deque
 from enum import Enum, auto
 
 import onnxruntime as ort
@@ -39,6 +40,28 @@ OOD_Z_THRESHOLD = float(os.environ.get("MICROBAN_OOD_Z_THRESHOLD", "6.0"))
 # ramp to the policy's default pose; clear -> ramp back into live inference) — fixed
 # at 8 per spec, not a tuning knob.
 OOD_CONSECUTIVE_TICKS = 8
+
+# Footfall-signature OOD check, layered on top of the z-score above. While the robot
+# is being commanded to actively walk, each footfall should produce a small, sharp
+# bump in body-frame vertical acceleration as the stance leg takes the body's
+# weight — a direct consequence of ground reaction force, not something a policy
+# "decides" to produce, so unlike raw leg activity it can't be faked by a lifted
+# robot's own balancing motion (see git log for why a joint-velocity-based attempt
+# at this was withdrawn: it false-triggered on ordinary leg momentum while
+# decelerating to a stop). No footfall bumps for a sustained window while being
+# commanded to move is the signature of feet with nothing under them to strike.
+#
+# IMPORTANT: unlike OOD_Z_THRESHOLD, this can't be pre-validated in MuJoCo sim —
+# MuJoCoController.read_acc() is a pseudo-accelerometer derived purely from
+# orientation (just gravity rotated into body frame), with no linear-acceleration/
+# impact dynamics at all, so sim will never show a footfall bump either way. Treat
+# both constants below as a starting guess for real-hardware testing, not a
+# calibrated value — watch the debug-print std numbers (MICROBAN_WALK_DEBUG=1)
+# across real standing/walking/held-in-air before trusting this to trip the safety
+# state machine, and override either via env var without a code change.
+COMMAND_MOVING_THRESHOLD = float(os.environ.get("MICROBAN_COMMAND_MOVING_THRESHOLD", "0.05"))
+FOOTFALL_WINDOW_TICKS = int(os.environ.get("MICROBAN_FOOTFALL_WINDOW_TICKS", "30"))  # ~0.6s at 50Hz
+FOOTFALL_MIN_ACC_STD = float(os.environ.get("MICROBAN_FOOTFALL_MIN_ACC_STD", "0.05"))  # g
 
 
 class _SafetyState(Enum):
@@ -127,6 +150,11 @@ class WalkMove(Move):
         self._recover_time_s: float | None = None
         self._last_ood_warn_s: float = 0.0
 
+        # Footfall-signature OOD check (see FOOTFALL_* above) — appended every tick
+        # regardless of safety state so the window stays warm.
+        self._vertical_acc_window: deque[float] = deque(maxlen=FOOTFALL_WINDOW_TICKS)
+        self._last_footfall_debug_s: float = 0.0
+
         # Debug print throttle (see DEBUG_PRINT above)
         self._last_debug_print_s: float = 0.0
 
@@ -181,6 +209,7 @@ class WalkMove(Move):
         self._safety_state = _SafetyState.NORMAL
         self._ood_consecutive = 0
         self._clear_consecutive = 0
+        self._vertical_acc_window.clear()
 
         # Ramp the pose to _default_pose while still holding the stiffer,
         # pre-walk kp (whatever was in effect, typically KP_DEFAULT) — the
@@ -241,9 +270,11 @@ class WalkMove(Move):
 
         # OOD check: always run, regardless of safety state — needed both to decide
         # NORMAL -> RAMPING_TO_SAFE and to know when SAFE_HOLD -> RECOVERING is due.
+        self._update_footfall_window(obs)
         input_obs = self.build_observation(obs)
         ood_z = self._ood_z_score(input_obs)
-        is_ood = ood_z > OOD_Z_THRESHOLD
+        footfall_missing = self._footfall_is_missing(obs)
+        is_ood = ood_z > OOD_Z_THRESHOLD or footfall_missing
         if is_ood:
             self._ood_consecutive += 1
             self._clear_consecutive = 0
@@ -253,8 +284,9 @@ class WalkMove(Move):
 
         if DEBUG_PRINT and is_ood and (obs.robot_state.time_s - self._last_ood_warn_s) >= DEBUG_PRINT_INTERVAL_S:
             self._last_ood_warn_s = obs.robot_state.time_s
+            reason = "footfall-missing" if footfall_missing else f"z={ood_z:.1f}"
             print(
-                f"Walk: OOD z={ood_z:.1f} (threshold {OOD_Z_THRESHOLD:.1f}) "
+                f"Walk: OOD {reason} (z threshold {OOD_Z_THRESHOLD:.1f}) "
                 f"consecutive={self._ood_consecutive} state={self._safety_state.name}",
                 end="\r\n", flush=True,
             )
@@ -287,6 +319,42 @@ class WalkMove(Move):
         vec = np.asarray(input_obs[: self._ood_obs_len], dtype=np.float64)
         z = (vec - self._ood_mean) / self._ood_std
         return float(np.max(np.abs(z)))
+
+    def _update_footfall_window(self, obs: Observation) -> None:
+        """Append this tick's body-frame vertical acceleration to the rolling window
+        _footfall_is_missing() reads. acc/projected_gravity come back empty together
+        on an IMU read failure (see Observer.read_state's own try/except) — skip the
+        tick rather than feed a bogus zero into the window."""
+        acc = obs.robot_state.acc
+        pg = obs.robot_state.projected_gravity
+        if not acc or not pg:
+            return
+        # pg is the unit "down" direction in body frame, so -pg is "up"; acc . (-pg)
+        # is the component of specific force along it — ~+1g at rest, with footfall
+        # bumps riding on top during an active gait. See FOOTFALL_* above for the
+        # approximation this relies on (pg treated as quasi-static within one window).
+        vertical_acc = -float(np.dot(acc, pg))
+        self._vertical_acc_window.append(vertical_acc)
+
+        if DEBUG_PRINT and len(self._vertical_acc_window) == self._vertical_acc_window.maxlen \
+                and (obs.robot_state.time_s - self._last_footfall_debug_s) >= DEBUG_PRINT_INTERVAL_S:
+            self._last_footfall_debug_s = obs.robot_state.time_s
+            print(
+                f"Walk: vertical_acc std={float(np.std(self._vertical_acc_window)):.3f}g "
+                f"(footfall-missing threshold {FOOTFALL_MIN_ACC_STD:.3f}g)",
+                end="\r\n", flush=True,
+            )
+
+    def _footfall_is_missing(self, obs: Observation) -> bool:
+        """True if the robot is commanded to actively walk but body-frame vertical
+        acceleration has stayed flat (no footfall bumps) for a full window — the
+        signature of feet with nothing under them to strike. See FOOTFALL_* above."""
+        vx, vy, vtheta = (obs.user_input.velocity[k] for k in ("vx", "vy", "vtheta"))
+        if max(abs(vx), abs(vy), abs(vtheta)) <= COMMAND_MOVING_THRESHOLD:
+            return False
+        if len(self._vertical_acc_window) < self._vertical_acc_window.maxlen:
+            return False
+        return float(np.std(self._vertical_acc_window)) < FOOTFALL_MIN_ACC_STD
 
     def _run_inference(
         self, obs: Observation, command: MotorCommand, input_obs: list[float], blend: float = 1.0
@@ -428,6 +496,7 @@ class WalkMove(Move):
         self._clear_consecutive = 0
         self._safe_ramp_time_s = None
         self._recover_time_s = None
+        self._vertical_acc_window.clear()
 
         # Save json logs
         if LOGGING:
